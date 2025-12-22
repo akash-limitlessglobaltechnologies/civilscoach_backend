@@ -4,23 +4,92 @@ const UserTestRecord = require('../models/UserTestRecord');
 const { validateEmail } = require('../utils/validation');
 const crypto = require('crypto');
 
-// Get all tests (Public)
+// Get all tests with optional test type filtering (Public)
 const getAllTests = async (req, res, next) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
+    const testType = req.query.testType; // Optional filter by test type
 
-    const tests = await Test.find({}, 'name year paper duration scoring createdAt')
+    // Build query object
+    const query = {};
+    if (testType && ['PYQ', 'Practice', 'Assessment'].includes(testType)) {
+      query.testType = testType;
+    }
+
+    const tests = await Test.find(query, 'name year paper duration scoring testType createdAt')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
     
-    const total = await Test.countDocuments();
+    const total = await Test.countDocuments(query);
+
+    // Get counts by test type for frontend tabs
+    const testCounts = await Test.aggregate([
+      { $group: { _id: '$testType', count: { $sum: 1 } } }
+    ]);
+
+    const typeStats = {
+      PYQ: 0,
+      Practice: 0,
+      Assessment: 0
+    };
+
+    testCounts.forEach(item => {
+      if (item._id) {
+        typeStats[item._id] = item.count;
+      }
+    });
     
     res.json({ 
       success: true, 
       tests,
+      typeStats,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(total / limit),
+        totalTests: total,
+        hasNext: page < Math.ceil(total / limit),
+        hasPrev: page > 1
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Get tests by specific type (Public)
+const getTestsByType = async (req, res, next) => {
+  try {
+    const { testType } = req.params;
+    
+    // Validate test type
+    if (!['PYQ', 'Practice', 'Assessment'].includes(testType)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid test type. Must be PYQ, Practice, or Assessment' 
+      });
+    }
+
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const tests = await Test.find(
+      { testType: testType }, 
+      'name year paper duration scoring testType createdAt numberOfQuestions'
+    )
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+    
+    const total = await Test.countDocuments({ testType: testType });
+    
+    res.json({ 
+      success: true, 
+      tests,
+      testType,
       pagination: {
         currentPage: page,
         totalPages: Math.ceil(total / limit),
@@ -101,6 +170,7 @@ const startTestSession = async (req, res, next) => {
       sessionId,
       duration: test.duration,
       scoring: test.scoring,
+      testType: test.testType,
       message: 'Test session started successfully' 
     });
   } catch (error) {
@@ -188,7 +258,8 @@ const submitTest = async (req, res, next) => {
       wrongAnswers,
       unanswered,
       totalScore,
-      percentage
+      percentage,
+      testType: test.testType
     });
 
     // Update test session
@@ -208,6 +279,7 @@ const submitTest = async (req, res, next) => {
       testName: test.name,
       testYear: test.year,
       testPaper: test.paper,
+      testType: test.testType, // Add test type to record
       score: totalScore, // Total weighted score (can be negative)
       correctAnswers: correctAnswers,
       wrongAnswers: wrongAnswers,
@@ -227,6 +299,7 @@ const submitTest = async (req, res, next) => {
       success: true, 
       totalScore: parseFloat(totalScore.toFixed(2)),
       scoring: scoring,
+      testType: test.testType,
       breakdown: {
         correct: correctAnswers,
         wrong: wrongAnswers,
@@ -313,6 +386,7 @@ const getSessionStatus = async (req, res, next) => {
       sessionId: testSession.sessionId,
       testId: testSession.testId._id,
       testName: testSession.testId.name,
+      testType: testSession.testId.testType,
       startTime: testSession.startTime,
       timeElapsed: Math.round(timeElapsed),
       timeRemaining: Math.round(timeRemaining),
@@ -327,6 +401,7 @@ const getSessionStatus = async (req, res, next) => {
 
 module.exports = {
   getAllTests,
+  getTestsByType,
   getTestById,
   startTestSession,
   submitTest,

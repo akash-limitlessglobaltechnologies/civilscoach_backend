@@ -6,6 +6,9 @@ const testController = require('../controllers/testController');
 // Get all tests (Public)
 router.get('/', testController.getAllTests);
 
+// Get tests by specific type (Public)
+router.get('/type/:testType', testController.getTestsByType);
+
 // Get specific test by ID (Public)
 router.get('/:id', testController.getTestById);
 
