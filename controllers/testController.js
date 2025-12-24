@@ -131,18 +131,11 @@ const getTestById = async (req, res, next) => {
   }
 };
 
-// Start a test session
+// Start a test session (now requires authentication)
 const startTestSession = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { email } = req.body;
-
-    if (!email || !validateEmail(email)) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Valid email address is required' 
-      });
-    }
+    const email = req.user.email; // Get from authenticated user
 
     const test = await Test.findById(id);
     if (!test) {
@@ -152,7 +145,7 @@ const startTestSession = async (req, res, next) => {
       });
     }
 
-    // Generate unique session ID
+    // Generate unique session ID with user email
     const sessionId = `test_${id}_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
 
     // Create new test session
@@ -171,6 +164,10 @@ const startTestSession = async (req, res, next) => {
       duration: test.duration,
       scoring: test.scoring,
       testType: test.testType,
+      user: {
+        email: email,
+        phoneNumber: req.user.phoneNumber
+      },
       message: 'Test session started successfully' 
     });
   } catch (error) {

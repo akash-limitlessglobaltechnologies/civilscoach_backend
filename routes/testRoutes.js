@@ -1,32 +1,27 @@
 const express = require('express');
 const router = express.Router();
-const { body } = require('express-validator');
+const { authenticateToken, optionalAuth } = require('../middleware/auth');
 const testController = require('../controllers/testController');
 
-// Get all tests (Public)
+// Get all tests (Public - no auth required)
 router.get('/', testController.getAllTests);
 
-// Get tests by specific type (Public)
+// Get tests by specific type (Public - no auth required)
 router.get('/type/:testType', testController.getTestsByType);
 
-// Get specific test by ID (Public)
+// Get specific test by ID (Public - no auth required)
 router.get('/:id', testController.getTestById);
 
-// Start a test session
-router.post('/:id/start', [
-  body('email')
-    .isEmail()
-    .withMessage('Please provide a valid email address')
-    .normalizeEmail()
-], testController.startTestSession);
+// Start a test session (Protected - requires authentication)
+router.post('/:id/start', authenticateToken, testController.startTestSession);
 
-// Submit test answers
-router.post('/:sessionId/submit', testController.submitTest);
+// Submit test answers (Protected - requires authentication)
+router.post('/:sessionId/submit', authenticateToken, testController.submitTest);
 
-// End test session
-router.post('/:sessionId/end', testController.endTestSession);
+// End test session (Protected - requires authentication)
+router.post('/:sessionId/end', authenticateToken, testController.endTestSession);
 
-// Get test session status
-router.get('/session/:sessionId/status', testController.getSessionStatus);
+// Get test session status (Protected - requires authentication)
+router.get('/session/:sessionId/status', authenticateToken, testController.getSessionStatus);
 
 module.exports = router;

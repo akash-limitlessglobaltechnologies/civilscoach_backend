@@ -1,15 +1,17 @@
 const UserTestRecord = require('../models/UserTestRecord');
 const { validateEmail } = require('../utils/validation');
 
-// Get user performance by email
+// Get user performance by email (now using authenticated user)
 const getUserPerformance = async (req, res, next) => {
   try {
-    const { email } = req.body;
+    // Get email from authenticated user token
+    const email = req.user.email;
     
     if (!email || !validateEmail(email)) {
       return res.status(400).json({
         success: false,
-        message: 'Valid email address is required'
+        message: 'Invalid user authentication',
+        type: 'AUTH_ERROR'
       });
     }
 
@@ -17,7 +19,7 @@ const getUserPerformance = async (req, res, next) => {
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    console.log('Fetching performance for email:', email); // Debug log
+    console.log('Fetching performance for authenticated user:', email); // Debug log
 
     // Get user test records
     const userRecords = await UserTestRecord.find({ email: email.toLowerCase().trim() })
@@ -33,7 +35,11 @@ const getUserPerformance = async (req, res, next) => {
     if (userRecords.length === 0) {
       return res.json({
         success: true,
-        message: 'No test records found for this email',
+        message: 'No test records found for this user',
+        user: {
+          email: email,
+          phoneNumber: req.user.phoneNumber
+        },
         totalTests: 0,
         averageScore: null,
         bestScore: null,
@@ -91,7 +97,10 @@ const getUserPerformance = async (req, res, next) => {
 
     const responseData = {
       success: true,
-      email: email.toLowerCase().trim(),
+      user: {
+        email: email,
+        phoneNumber: req.user.phoneNumber
+      },
       totalTests,
       averageScore: Math.round(averagePercentage),
       averageWeightedScore: parseFloat(averageWeightedScore.toFixed(2)),
@@ -129,16 +138,18 @@ const getUserPerformance = async (req, res, next) => {
   }
 };
 
-// Get user test history with detailed results
+// Get user test history with detailed results (now using authenticated user)
 const getUserTestHistory = async (req, res, next) => {
   try {
-    const { email } = req.body;
+    // Get email from authenticated user token
+    const email = req.user.email;
     const { testId } = req.params;
     
     if (!email || !validateEmail(email)) {
       return res.status(400).json({
         success: false,
-        message: 'Valid email address is required'
+        message: 'Invalid user authentication',
+        type: 'AUTH_ERROR'
       });
     }
 
@@ -172,7 +183,10 @@ const getUserTestHistory = async (req, res, next) => {
 
     res.json({
       success: true,
-      email: email.toLowerCase().trim(),
+      user: {
+        email: email,
+        phoneNumber: req.user.phoneNumber
+      },
       testHistory: detailedHistory,
       totalRecords: detailedHistory.length
     });

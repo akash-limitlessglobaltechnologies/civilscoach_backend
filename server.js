@@ -4,6 +4,7 @@ const cors = require('cors');
 require('dotenv').config();
 
 // Import routes
+const authRoutes = require('./routes/authRoutes');
 const testRoutes = require('./routes/testRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const userRoutes = require('./routes/userRoutes');
@@ -52,6 +53,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // API routes
+app.use('/api/auth', authRoutes);
 app.use('/api/tests', testRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/user', userRoutes);
