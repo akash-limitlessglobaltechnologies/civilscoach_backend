@@ -1,703 +1,558 @@
 const mongoose = require('mongoose');
 
-// Area mapping for reference
-const AREA_MAPPING = {
-  1: 'Current Affairs',
-  2: 'History',
-  3: 'Polity',
-  4: 'Economy',
-  5: 'Geography',
-  6: 'Ecology',
-  7: 'General Science',
-  8: 'Arts & Culture'
-};
-
-// Flexible User Test Record Schema with area and subarea tracking
+// Enhanced User Test Record Schema with detailed answer storage and user references
 const userTestRecordSchema = new mongoose.Schema({
+  // User reference (replaces email field)
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true
+  },
+  // Keep email for backward compatibility and quick queries
   email: {
     type: String,
-    required: [true, 'Email is required'],
+    required: true,
     lowercase: true,
     trim: true,
     index: true
   },
+  // Test information
   testId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Test',
-    required: [true, 'Test ID is required'],
+    required: true,
     index: true
   },
   sessionId: {
     type: String,
-    required: [true, 'Session ID is required'],
+    required: true,
     unique: true,
     index: true
   },
-  // Flexible test metadata with defaults
   testName: {
     type: String,
+    required: true,
     trim: true,
-    default: 'Unnamed Test'
+    index: true
   },
   testYear: {
     type: Number,
-    default: () => new Date().getFullYear(),
     index: true
   },
   testPaper: {
     type: String,
-    trim: true,
-    default: 'General Test'
+    trim: true
   },
   testType: {
     type: String,
-    enum: {
-      values: ['PYQ', 'Practice', 'Assessment'],
-      message: 'Test type must be PYQ, Practice, or Assessment'
-    },
-    default: 'Practice',
+    enum: ['PYQ', 'Practice', 'Assessment'],
+    required: true,
     index: true
   },
-  // Flexible scoring with defaults
+  // Scoring information
   score: {
     type: Number,
-    default: 0
+    required: true,
+    index: true
   },
   correctAnswers: {
     type: Number,
-    min: 0,
-    default: 0
+    required: true,
+    default: 0,
+    min: 0
   },
   wrongAnswers: {
     type: Number,
-    min: 0,
-    default: 0
+    required: true,
+    default: 0,
+    min: 0
   },
   unansweredQuestions: {
     type: Number,
-    min: 0,
-    default: 0
+    required: true,
+    default: 0,
+    min: 0
   },
   totalQuestions: {
     type: Number,
-    min: 1,
-    default: 1
+    required: true,
+    min: 1
   },
   percentage: {
     type: Number,
+    required: true,
     min: 0,
     max: 100,
-    default: 0
+    index: true
   },
+  // Time tracking
   timeTaken: {
     type: Number,
-    min: 0,
-    default: 0,
-    comment: 'Time taken in minutes'
+    required: true,
+    min: 0 // in minutes
+  },
+  timeAllotted: {
+    type: Number,
+    required: true,
+    min: 1 // in minutes
   },
   timeExpired: {
     type: Boolean,
-    default: false
+    required: true,
+    default: false,
+    index: true
   },
-  // Flexible answers storage
+  // Enhanced answer storage with detailed information
   answers: {
     type: Map,
-    of: String,
+    of: {
+      selectedOption: {
+        type: String,
+        enum: ['A', 'B', 'C', 'D', ''], // Empty string for unanswered
+        default: ''
+      },
+      correctOption: {
+        type: String,
+        enum: ['A', 'B', 'C', 'D'],
+        required: true
+      },
+      isCorrect: {
+        type: Boolean,
+        required: true
+      },
+      timeSpent: {
+        type: Number, // time spent on this question in seconds
+        default: 0,
+        min: 0
+      },
+      attempts: {
+        type: Number, // number of times user changed answer
+        default: 1,
+        min: 0
+      },
+      difficulty: {
+        type: String,
+        enum: ['Easy', 'Medium', 'Hard'],
+        default: 'Medium'
+      },
+      area: {
+        type: Number,
+        default: 1
+      },
+      subarea: {
+        type: String,
+        default: ''
+      },
+      questionText: {
+        type: String,
+        default: '' // Store question text for historical reference
+      },
+      explanation: {
+        type: String,
+        default: '' // Store explanation for this question
+      }
+    },
     default: new Map()
   },
-  // Flexible scoring configuration with defaults
+  // Performance analytics
+  analytics: {
+    subjectWisePerformance: {
+      type: Map,
+      of: {
+        correct: { type: Number, default: 0 },
+        wrong: { type: Number, default: 0 },
+        unanswered: { type: Number, default: 0 },
+        total: { type: Number, default: 0 },
+        percentage: { type: Number, default: 0 }
+      },
+      default: new Map()
+    },
+    difficultyWisePerformance: {
+      easy: {
+        correct: { type: Number, default: 0 },
+        wrong: { type: Number, default: 0 },
+        unanswered: { type: Number, default: 0 },
+        total: { type: Number, default: 0 }
+      },
+      medium: {
+        correct: { type: Number, default: 0 },
+        wrong: { type: Number, default: 0 },
+        unanswered: { type: Number, default: 0 },
+        total: { type: Number, default: 0 }
+      },
+      hard: {
+        correct: { type: Number, default: 0 },
+        wrong: { type: Number, default: 0 },
+        unanswered: { type: Number, default: 0 },
+        total: { type: Number, default: 0 }
+      }
+    },
+    averageTimePerQuestion: {
+      type: Number,
+      default: 0 // in seconds
+    },
+    questionsReviewed: {
+      type: Number,
+      default: 0
+    },
+    flaggedQuestions: {
+      type: [Number], // array of question indices
+      default: []
+    }
+  },
+  // Scoring system used
   scoring: {
     correct: {
       type: Number,
-      default: 1
+      default: 4
     },
     wrong: {
       type: Number,
-      default: 0
+      default: -1
     },
     unanswered: {
       type: Number,
       default: 0
     }
   },
-  // NEW: Area-wise performance tracking
-  areaPerformance: {
-    type: Map,
-    of: {
-      total: { type: Number, default: 0 },
-      correct: { type: Number, default: 0 },
-      wrong: { type: Number, default: 0 },
-      unanswered: { type: Number, default: 0 },
-      percentage: { type: Number, default: 0 }
+  // Test completion details
+  completion: {
+    startedAt: {
+      type: Date,
+      required: true,
+      index: true
     },
-    default: new Map()
-  },
-  // NEW: Subarea performance tracking
-  subareaPerformance: {
-    type: Map,
-    of: {
-      total: { type: Number, default: 0 },
-      correct: { type: Number, default: 0 },
-      wrong: { type: Number, default: 0 },
-      unanswered: { type: Number, default: 0 },
-      percentage: { type: Number, default: 0 },
-      area: { type: Number, min: 1, max: 8 } // Reference to main area
+    completedAt: {
+      type: Date,
+      required: true,
+      index: true
     },
-    default: new Map()
+    submissionType: {
+      type: String,
+      enum: ['auto', 'manual', 'timeout'],
+      default: 'manual'
+    },
+    deviceInfo: {
+      userAgent: { type: String, default: '' },
+      platform: { type: String, default: '' },
+      screenSize: { type: String, default: '' }
+    },
+    interruptions: {
+      type: Number,
+      default: 0 // number of times user left the test
+    }
   },
-  completedAt: {
-    type: Date,
-    default: Date.now,
-    index: true
+  // Review and feedback
+  review: {
+    hasReviewed: {
+      type: Boolean,
+      default: false
+    },
+    reviewedAt: {
+      type: Date
+    },
+    feedback: {
+      difficulty: {
+        type: String,
+        enum: ['Too Easy', 'Easy', 'Just Right', 'Hard', 'Too Hard'],
+        default: 'Just Right'
+      },
+      quality: {
+        type: Number,
+        min: 1,
+        max: 5,
+        default: 5
+      },
+      comments: {
+        type: String,
+        maxlength: 1000,
+        default: ''
+      }
+    }
+  },
+  // Metadata
+  metadata: {
+    version: {
+      type: String,
+      default: '2.0'
+    },
+    source: {
+      type: String,
+      enum: ['web', 'mobile'],
+      default: 'web'
+    },
+    isPublic: {
+      type: Boolean,
+      default: false // for leaderboards
+    },
+    tags: {
+      type: [String],
+      default: []
+    }
   }
 }, {
-  timestamps: true
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
 });
 
-// Compound indexes for efficient queries including area-based queries
+// Indexes for better performance
+userTestRecordSchema.index({ userId: 1, completedAt: -1 });
 userTestRecordSchema.index({ email: 1, completedAt: -1 });
-userTestRecordSchema.index({ email: 1, testType: 1, completedAt: -1 });
 userTestRecordSchema.index({ testId: 1, completedAt: -1 });
-userTestRecordSchema.index({ testType: 1, completedAt: -1 });
-userTestRecordSchema.index({ email: 1, testType: 1, percentage: -1 });
-userTestRecordSchema.index({ 'areaPerformance.1.percentage': -1 }); // Current Affairs performance
-userTestRecordSchema.index({ 'areaPerformance.2.percentage': -1 }); // History performance
-// Add more area-specific indexes as needed
+userTestRecordSchema.index({ testType: 1, percentage: -1 });
+userTestRecordSchema.index({ score: -1 });
+userTestRecordSchema.index({ 'completion.completedAt': -1 });
+userTestRecordSchema.index({ sessionId: 1 });
 
-// TTL index to automatically delete old records after 2 years
-userTestRecordSchema.index({ completedAt: 1 }, { expireAfterSeconds: 63072000 }); // 2 years
-
-// Virtual for performance grade
+// Virtual for grade based on percentage
 userTestRecordSchema.virtual('grade').get(function() {
-  if (this.percentage >= 90) return 'A+';
-  if (this.percentage >= 80) return 'A';
-  if (this.percentage >= 70) return 'B';
-  if (this.percentage >= 60) return 'C';
-  if (this.percentage >= 50) return 'D';
+  const percentage = this.percentage;
+  if (percentage >= 90) return 'A+';
+  if (percentage >= 80) return 'A';
+  if (percentage >= 70) return 'B+';
+  if (percentage >= 60) return 'B';
+  if (percentage >= 50) return 'C+';
+  if (percentage >= 40) return 'C';
+  if (percentage >= 33) return 'D';
   return 'F';
 });
 
-// Virtual for pass/fail status
-userTestRecordSchema.virtual('passed').get(function() {
-  return this.percentage >= 50;
+// Virtual for test efficiency (percentage per minute)
+userTestRecordSchema.virtual('efficiency').get(function() {
+  return this.timeTaken > 0 ? (this.percentage / this.timeTaken).toFixed(2) : 0;
 });
 
-// Virtual for detailed performance summary with area breakdown
-userTestRecordSchema.virtual('summary').get(function() {
+// Virtual for detailed performance summary
+userTestRecordSchema.virtual('performanceSummary').get(function() {
   return {
-    totalQuestions: this.totalQuestions || 0,
-    correct: this.correctAnswers || 0,
-    wrong: this.wrongAnswers || 0,
-    unanswered: this.unansweredQuestions || 0,
-    score: this.score || 0,
-    percentage: this.percentage || 0,
     grade: this.grade,
-    passed: this.passed,
-    timeTaken: this.timeTaken || 0,
-    timeExpired: this.timeExpired || false,
-    testType: this.testType || 'Practice',
-    areaBreakdown: this.getAreaBreakdown(),
-    subareaBreakdown: this.getSubareaBreakdown()
+    efficiency: this.efficiency,
+    accuracy: ((this.correctAnswers / this.totalQuestions) * 100).toFixed(1),
+    completionRate: (((this.correctAnswers + this.wrongAnswers) / this.totalQuestions) * 100).toFixed(1),
+    timeUtilization: ((this.timeTaken / this.timeAllotted) * 100).toFixed(1)
   };
 });
 
-// Virtual to get area breakdown with names
-userTestRecordSchema.virtual('areaBreakdownWithNames').get(function() {
-  const breakdown = {};
-  
-  if (this.areaPerformance) {
-    for (const [areaNum, stats] of this.areaPerformance) {
-      const areaName = AREA_MAPPING[parseInt(areaNum)] || `Area ${areaNum}`;
-      breakdown[areaName] = {
-        ...stats,
-        areaNumber: parseInt(areaNum)
-      };
-    }
-  }
-  
-  return breakdown;
-});
-
-// Flexible pre-save middleware with area performance calculation
-userTestRecordSchema.pre('save', function(next) {
-  try {
-    // Auto-calculate missing values
-    const total = this.totalQuestions || 1;
-    const correct = this.correctAnswers || 0;
-    const wrong = this.wrongAnswers || 0;
-    const unanswered = this.unansweredQuestions || 0;
-
-    // Auto-fix totalQuestions if it doesn't match the sum
-    const calculatedTotal = correct + wrong + unanswered;
-    if (calculatedTotal > 0 && calculatedTotal !== total) {
-      this.totalQuestions = calculatedTotal;
-      console.warn(`Auto-corrected totalQuestions from ${total} to ${calculatedTotal}`);
-    }
-
-    // Auto-calculate percentage if missing or incorrect
-    if (this.totalQuestions > 0) {
-      const calculatedPercentage = (this.correctAnswers / this.totalQuestions) * 100;
-      if (Math.abs(this.percentage - calculatedPercentage) > 0.1) {
-        this.percentage = Math.round(calculatedPercentage * 10) / 10;
-      }
-    }
-
-    // Ensure percentage is within bounds
-    this.percentage = Math.max(0, Math.min(100, this.percentage || 0));
-
-    // Set default scoring if missing
-    if (!this.scoring || typeof this.scoring !== 'object') {
-      this.scoring = { correct: 1, wrong: 0, unanswered: 0 };
-    } else {
-      if (this.scoring.correct === undefined) this.scoring.correct = 1;
-      if (this.scoring.wrong === undefined) this.scoring.wrong = 0;
-      if (this.scoring.unanswered === undefined) this.scoring.unanswered = 0;
-    }
-
-    // Ensure timeTaken is not negative
-    this.timeTaken = Math.max(0, this.timeTaken || 0);
-
-    // Initialize area and subarea performance maps if they don't exist
-    if (!this.areaPerformance) {
-      this.areaPerformance = new Map();
-    }
-    if (!this.subareaPerformance) {
-      this.subareaPerformance = new Map();
-    }
-
-    next();
-  } catch (error) {
-    console.warn('Pre-save processing warning:', error.message);
-    next();
-  }
-});
-
 // Instance methods
-userTestRecordSchema.methods.getPerformanceLevel = function() {
-  const percentage = this.percentage || 0;
-  if (percentage >= 90) return 'Excellent';
-  if (percentage >= 80) return 'Very Good';
-  if (percentage >= 70) return 'Good';
-  if (percentage >= 60) return 'Average';
-  if (percentage >= 50) return 'Below Average';
-  return 'Poor';
-};
+userTestRecordSchema.methods.calculateDetailedAnalytics = function() {
+  const analytics = {
+    subjectWisePerformance: new Map(),
+    difficultyWisePerformance: {
+      easy: { correct: 0, wrong: 0, unanswered: 0, total: 0 },
+      medium: { correct: 0, wrong: 0, unanswered: 0, total: 0 },
+      hard: { correct: 0, wrong: 0, unanswered: 0, total: 0 }
+    },
+    averageTimePerQuestion: 0,
+    totalTimeSpent: 0
+  };
 
-userTestRecordSchema.methods.getAreaBreakdown = function() {
-  const breakdown = {};
-  
-  if (this.areaPerformance) {
-    for (const [areaNum, stats] of this.areaPerformance) {
-      const areaName = AREA_MAPPING[parseInt(areaNum)] || `Area ${areaNum}`;
-      breakdown[areaName] = {
-        ...stats,
-        areaNumber: parseInt(areaNum)
-      };
-    }
-  }
-  
-  return breakdown;
-};
+  let totalTimeSpent = 0;
+  let questionCount = 0;
 
-userTestRecordSchema.methods.getSubareaBreakdown = function() {
-  const breakdown = {};
-  
-  if (this.subareaPerformance) {
-    for (const [subareaName, stats] of this.subareaPerformance) {
-      breakdown[subareaName] = {
-        ...stats,
-        areaName: AREA_MAPPING[stats.area] || `Area ${stats.area}`
-      };
-    }
-  }
-  
-  return breakdown;
-};
+  for (const [questionIndex, answerData] of this.answers.entries()) {
+    questionCount++;
+    totalTimeSpent += answerData.timeSpent || 0;
 
-userTestRecordSchema.methods.getBestPerformingArea = function() {
-  let bestArea = null;
-  let bestPercentage = -1;
-  
-  if (this.areaPerformance) {
-    for (const [areaNum, stats] of this.areaPerformance) {
-      if (stats.percentage > bestPercentage) {
-        bestPercentage = stats.percentage;
-        bestArea = {
-          number: parseInt(areaNum),
-          name: AREA_MAPPING[parseInt(areaNum)] || `Area ${areaNum}`,
-          percentage: stats.percentage,
-          stats: stats
-        };
-      }
-    }
-  }
-  
-  return bestArea;
-};
-
-userTestRecordSchema.methods.getWorstPerformingArea = function() {
-  let worstArea = null;
-  let worstPercentage = 101;
-  
-  if (this.areaPerformance) {
-    for (const [areaNum, stats] of this.areaPerformance) {
-      if (stats.total > 0 && stats.percentage < worstPercentage) {
-        worstPercentage = stats.percentage;
-        worstArea = {
-          number: parseInt(areaNum),
-          name: AREA_MAPPING[parseInt(areaNum)] || `Area ${areaNum}`,
-          percentage: stats.percentage,
-          stats: stats
-        };
-      }
-    }
-  }
-  
-  return worstArea;
-};
-
-// Method to update area performance from test results
-userTestRecordSchema.methods.updateAreaPerformance = function(testQuestions, userAnswers) {
-  if (!testQuestions || !Array.isArray(testQuestions)) return;
-  
-  const areaStats = {};
-  const subareaStats = {};
-  
-  testQuestions.forEach((question, index) => {
-    const userAnswer = userAnswers[index];
-    const correctOption = question.options.find(opt => opt.correct);
-    const area = question.area || 1;
-    const subarea = question.subarea || '';
+    // Subject-wise performance
+    const area = answerData.area || 1;
+    const areaKey = area.toString();
     
-    // Initialize area stats
-    if (!areaStats[area]) {
-      areaStats[area] = { total: 0, correct: 0, wrong: 0, unanswered: 0 };
+    if (!analytics.subjectWisePerformance.has(areaKey)) {
+      analytics.subjectWisePerformance.set(areaKey, {
+        correct: 0, wrong: 0, unanswered: 0, total: 0, percentage: 0
+      });
     }
     
-    // Initialize subarea stats
-    if (subarea && !subareaStats[subarea]) {
-      subareaStats[subarea] = { total: 0, correct: 0, wrong: 0, unanswered: 0, area: area };
-    }
+    const areaStats = analytics.subjectWisePerformance.get(areaKey);
+    areaStats.total++;
     
-    // Update counts
-    areaStats[area].total++;
-    if (subarea) subareaStats[subarea].total++;
-    
-    if (!userAnswer) {
-      areaStats[area].unanswered++;
-      if (subarea) subareaStats[subarea].unanswered++;
-    } else if (userAnswer === correctOption.key) {
-      areaStats[area].correct++;
-      if (subarea) subareaStats[subarea].correct++;
+    if (answerData.selectedOption === '') {
+      areaStats.unanswered++;
+    } else if (answerData.isCorrect) {
+      areaStats.correct++;
     } else {
-      areaStats[area].wrong++;
-      if (subarea) subareaStats[subarea].wrong++;
+      areaStats.wrong++;
     }
-  });
-  
-  // Calculate percentages and update maps
-  for (const [area, stats] of Object.entries(areaStats)) {
-    stats.percentage = stats.total > 0 ? (stats.correct / stats.total) * 100 : 0;
-    this.areaPerformance.set(area.toString(), stats);
-  }
-  
-  for (const [subarea, stats] of Object.entries(subareaStats)) {
-    stats.percentage = stats.total > 0 ? (stats.correct / stats.total) * 100 : 0;
-    this.subareaPerformance.set(subarea, stats);
-  }
-};
-
-userTestRecordSchema.methods.compareWithAverage = async function() {
-  try {
-    const TestRecord = this.constructor;
     
-    const avgStats = await TestRecord.aggregate([
-      { 
-        $match: { 
-          testType: this.testType || 'Practice',
-          _id: { $ne: this._id }
-        } 
-      },
-      {
-        $group: {
-          _id: null,
-          avgPercentage: { $avg: '$percentage' },
-          avgScore: { $avg: '$score' },
-          avgTime: { $avg: '$timeTaken' },
-          totalRecords: { $sum: 1 }
-        }
+    areaStats.percentage = areaStats.total > 0 ? 
+      ((areaStats.correct / areaStats.total) * 100).toFixed(1) : 0;
+
+    // Difficulty-wise performance
+    const difficulty = (answerData.difficulty || 'medium').toLowerCase();
+    if (analytics.difficultyWisePerformance[difficulty]) {
+      analytics.difficultyWisePerformance[difficulty].total++;
+      
+      if (answerData.selectedOption === '') {
+        analytics.difficultyWisePerformance[difficulty].unanswered++;
+      } else if (answerData.isCorrect) {
+        analytics.difficultyWisePerformance[difficulty].correct++;
+      } else {
+        analytics.difficultyWisePerformance[difficulty].wrong++;
       }
-    ]);
-
-    const avg = avgStats[0] || { 
-      avgPercentage: 0, 
-      avgScore: 0, 
-      avgTime: 0, 
-      totalRecords: 0 
-    };
-
-    return {
-      yourPercentage: this.percentage || 0,
-      avgPercentage: Math.round(avg.avgPercentage * 100) / 100,
-      percentageDiff: Math.round(((this.percentage || 0) - avg.avgPercentage) * 100) / 100,
-      yourScore: this.score || 0,
-      avgScore: Math.round(avg.avgScore * 100) / 100,
-      scoreDiff: Math.round(((this.score || 0) - avg.avgScore) * 100) / 100,
-      yourTime: this.timeTaken || 0,
-      avgTime: Math.round(avg.avgTime * 100) / 100,
-      timeDiff: Math.round(((this.timeTaken || 0) - avg.avgTime) * 100) / 100,
-      totalComparisons: avg.totalRecords,
-      testType: this.testType || 'Practice',
-      areaComparison: this.getAreaBreakdown()
-    };
-  } catch (error) {
-    console.warn('Error in compareWithAverage:', error.message);
-    return {
-      yourPercentage: this.percentage || 0,
-      avgPercentage: 0,
-      percentageDiff: 0,
-      yourScore: this.score || 0,
-      avgScore: 0,
-      scoreDiff: 0,
-      yourTime: this.timeTaken || 0,
-      avgTime: 0,
-      timeDiff: 0,
-      totalComparisons: 0,
-      testType: this.testType || 'Practice',
-      areaComparison: {}
-    };
-  }
-};
-
-// Static methods with area-based filtering
-userTestRecordSchema.statics.getPerformanceByEmail = function(email, options = {}) {
-  const { testType, area, limit = 10, page = 1 } = options;
-  const skip = (page - 1) * limit;
-  
-  const query = { email: email.toLowerCase().trim() };
-  if (testType && ['PYQ', 'Practice', 'Assessment'].includes(testType)) {
-    query.testType = testType;
-  }
-  
-  return this.find(query)
-    .sort({ completedAt: -1 })
-    .skip(skip)
-    .limit(limit)
-    .populate('testId', 'name duration questions');
-};
-
-userTestRecordSchema.statics.getUserStats = async function(email, testType = null) {
-  try {
-    const match = { email: email.toLowerCase().trim() };
-    if (testType && ['PYQ', 'Practice', 'Assessment'].includes(testType)) {
-      match.testType = testType;
     }
-    
-    const stats = await this.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: testType ? null : '$testType',
-          totalTests: { $sum: 1 },
-          avgPercentage: { $avg: '$percentage' },
-          avgScore: { $avg: '$score' },
-          bestPercentage: { $max: '$percentage' },
-          bestScore: { $max: '$score' },
-          worstPercentage: { $min: '$percentage' },
-          worstScore: { $min: '$score' },
-          totalTime: { $sum: '$timeTaken' },
-          avgTime: { $avg: '$timeTaken' },
-          passedTests: {
-            $sum: {
-              $cond: [{ $gte: ['$percentage', 50] }, 1, 0]
-            }
-          },
-          expiredTests: {
-            $sum: {
-              $cond: ['$timeExpired', 1, 0]
-            }
+  }
+
+  analytics.averageTimePerQuestion = questionCount > 0 ? 
+    (totalTimeSpent / questionCount).toFixed(1) : 0;
+  analytics.totalTimeSpent = totalTimeSpent;
+
+  this.analytics = analytics;
+  return analytics;
+};
+
+userTestRecordSchema.methods.getAnswerDetails = function(questionIndex) {
+  const answerData = this.answers.get(questionIndex.toString());
+  if (!answerData) {
+    return null;
+  }
+
+  return {
+    questionIndex: parseInt(questionIndex),
+    selectedOption: answerData.selectedOption,
+    correctOption: answerData.correctOption,
+    isCorrect: answerData.isCorrect,
+    timeSpent: answerData.timeSpent,
+    attempts: answerData.attempts,
+    difficulty: answerData.difficulty,
+    area: answerData.area,
+    subarea: answerData.subarea,
+    explanation: answerData.explanation
+  };
+};
+
+userTestRecordSchema.methods.getIncorrectAnswers = function() {
+  const incorrectAnswers = [];
+  
+  for (const [questionIndex, answerData] of this.answers.entries()) {
+    if (answerData.selectedOption !== '' && !answerData.isCorrect) {
+      incorrectAnswers.push({
+        questionIndex: parseInt(questionIndex),
+        selectedOption: answerData.selectedOption,
+        correctOption: answerData.correctOption,
+        difficulty: answerData.difficulty,
+        area: answerData.area,
+        subarea: answerData.subarea,
+        timeSpent: answerData.timeSpent,
+        questionText: answerData.questionText,
+        explanation: answerData.explanation
+      });
+    }
+  }
+  
+  return incorrectAnswers;
+};
+
+userTestRecordSchema.methods.getComparisonWithPreviousAttempts = function() {
+  // This method would compare with previous attempts of the same test
+  // Implementation would require additional database queries
+  return {
+    isImprovement: null,
+    scoreImprovement: 0,
+    timeImprovement: 0,
+    accuracyImprovement: 0
+  };
+};
+
+// Static methods
+userTestRecordSchema.statics.getLeaderboard = function(testId, limit = 10) {
+  return this.find({ testId, 'metadata.isPublic': true })
+    .populate('userId', 'profile.firstName profile.lastName email')
+    .sort({ score: -1, 'completion.completedAt': 1 })
+    .limit(limit)
+    .select('score percentage timeTaken completion.completedAt');
+};
+
+userTestRecordSchema.statics.getUserRanking = function(userId, testId) {
+  return this.aggregate([
+    { $match: { testId, 'metadata.isPublic': true } },
+    { $sort: { score: -1, 'completion.completedAt': 1 } },
+    {
+      $group: {
+        _id: null,
+        records: { $push: '$$ROOT' }
+      }
+    },
+    {
+      $unwind: {
+        path: '$records',
+        includeArrayIndex: 'rank'
+      }
+    },
+    { $match: { 'records.userId': userId } },
+    {
+      $project: {
+        rank: { $add: ['$rank', 1] },
+        totalParticipants: { $size: '$records' }
+      }
+    }
+  ]);
+};
+
+userTestRecordSchema.statics.getTestStatistics = function(testId) {
+  return this.aggregate([
+    { $match: { testId } },
+    {
+      $group: {
+        _id: null,
+        totalAttempts: { $sum: 1 },
+        averageScore: { $avg: '$score' },
+        averagePercentage: { $avg: '$percentage' },
+        averageTime: { $avg: '$timeTaken' },
+        highestScore: { $max: '$score' },
+        lowestScore: { $min: '$score' },
+        timeoutRate: {
+          $avg: {
+            $cond: [{ $eq: ['$timeExpired', true] }, 1, 0]
           }
         }
       }
-    ]);
-
-    return stats;
-  } catch (error) {
-    console.warn('Error in getUserStats:', error.message);
-    return [];
-  }
+    }
+  ]);
 };
 
-// New method to get area-wise performance for a user
-userTestRecordSchema.statics.getUserAreaStats = async function(email, options = {}) {
-  const { testType } = options;
-  const match = { email: email.toLowerCase().trim() };
-  if (testType) match.testType = testType;
+// Pre-save middleware
+userTestRecordSchema.pre('save', function(next) {
+  // Calculate detailed analytics if answers have changed
+  if (this.isModified('answers')) {
+    this.calculateDetailedAnalytics();
+  }
   
+  // Ensure completion times are set
+  if (!this.completion.startedAt) {
+    this.completion.startedAt = this.createdAt || new Date();
+  }
+  
+  if (!this.completion.completedAt) {
+    this.completion.completedAt = this.updatedAt || new Date();
+  }
+  
+  // Set time allotted if not set
+  if (!this.timeAllotted && this.populate && this.populate.testId) {
+    this.timeAllotted = this.populate.testId.duration || this.timeTaken;
+  }
+  
+  next();
+});
+
+// Post-save middleware to update user statistics
+userTestRecordSchema.post('save', async function(doc) {
   try {
-    const areaStats = await this.aggregate([
-      { $match: match },
-      { $unwind: { path: '$areaPerformance', preserveNullAndEmptyArrays: true } },
-      {
-        $group: {
-          _id: '$areaPerformance.k', // Area number
-          totalQuestions: { $sum: '$areaPerformance.v.total' },
-          totalCorrect: { $sum: '$areaPerformance.v.correct' },
-          totalWrong: { $sum: '$areaPerformance.v.wrong' },
-          totalUnanswered: { $sum: '$areaPerformance.v.unanswered' },
-          avgPercentage: { $avg: '$areaPerformance.v.percentage' },
-          testsTaken: { $sum: 1 }
-        }
+    const User = mongoose.model('User');
+    await User.findByIdAndUpdate(doc.userId, {
+      $inc: {
+        'statistics.totalTestsAttempted': 1,
+        'statistics.totalTestsCompleted': 1,
+        'statistics.totalTimeSpent': doc.timeTaken
       },
-      {
-        $project: {
-          areaNumber: '$_id',
-          areaName: {
-            $switch: {
-              branches: [
-                { case: { $eq: ['$_id', '1'] }, then: 'Current Affairs' },
-                { case: { $eq: ['$_id', '2'] }, then: 'History' },
-                { case: { $eq: ['$_id', '3'] }, then: 'Polity' },
-                { case: { $eq: ['$_id', '4'] }, then: 'Economy' },
-                { case: { $eq: ['$_id', '5'] }, then: 'Geography' },
-                { case: { $eq: ['$_id', '6'] }, then: 'Ecology' },
-                { case: { $eq: ['$_id', '7'] }, then: 'General Science' },
-                { case: { $eq: ['$_id', '8'] }, then: 'Arts & Culture' }
-              ],
-              default: 'Unknown'
-            }
-          },
-          totalQuestions: 1,
-          totalCorrect: 1,
-          totalWrong: 1,
-          totalUnanswered: 1,
-          avgPercentage: { $round: ['$avgPercentage', 1] },
-          testsTaken: 1
-        }
-      },
-      { $sort: { areaNumber: 1 } }
-    ]);
-    
-    return areaStats;
-  } catch (error) {
-    console.warn('Error in getUserAreaStats:', error.message);
-    return [];
-  }
-};
-
-userTestRecordSchema.statics.getLeaderboard = function(testType = null, limit = 10) {
-  try {
-    const match = {};
-    if (testType && ['PYQ', 'Practice', 'Assessment'].includes(testType)) {
-      match.testType = testType;
-    }
-    
-    return this.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: '$email',
-          bestScore: { $max: '$score' },
-          bestPercentage: { $max: '$percentage' },
-          avgPercentage: { $avg: '$percentage' },
-          totalTests: { $sum: 1 },
-          testType: { $first: '$testType' }
-        }
-      },
-      { $sort: { bestScore: -1, bestPercentage: -1, avgPercentage: -1 } },
-      { $limit: limit }
-    ]);
-  } catch (error) {
-    console.warn('Error in getLeaderboard:', error.message);
-    return [];
-  }
-};
-
-// Method to validate and auto-fix record data
-userTestRecordSchema.methods.validateAndFix = function() {
-  const warnings = [];
-  const fixes = [];
-
-  if (!this.testName) {
-    this.testName = 'Unnamed Test';
-    fixes.push('Test name set to "Unnamed Test"');
-  }
-
-  if (!this.testYear) {
-    this.testYear = new Date().getFullYear();
-    fixes.push(`Test year set to ${this.testYear}`);
-  }
-
-  if (!this.testPaper) {
-    this.testPaper = 'General Test';
-    fixes.push('Test paper set to "General Test"');
-  }
-
-  if (!this.testType || !['PYQ', 'Practice', 'Assessment'].includes(this.testType)) {
-    this.testType = 'Practice';
-    fixes.push('Test type set to "Practice"');
-  }
-
-  const total = this.correctAnswers + this.wrongAnswers + this.unansweredQuestions;
-  if (total === 0) {
-    this.totalQuestions = 1;
-    this.unansweredQuestions = 1;
-    fixes.push('Added default question count');
-  } else if (total !== this.totalQuestions) {
-    this.totalQuestions = total;
-    fixes.push(`Total questions adjusted to ${total}`);
-  }
-
-  if (this.totalQuestions > 0) {
-    const correctPercentage = (this.correctAnswers / this.totalQuestions) * 100;
-    if (Math.abs(this.percentage - correctPercentage) > 0.1) {
-      this.percentage = Math.round(correctPercentage * 10) / 10;
-      fixes.push(`Percentage recalculated to ${this.percentage}%`);
-    }
-  }
-
-  if (!this.scoring) {
-    this.scoring = { correct: 1, wrong: 0, unanswered: 0 };
-    fixes.push('Added default scoring configuration');
-  }
-
-  // Initialize area and subarea performance if missing
-  if (!this.areaPerformance) {
-    this.areaPerformance = new Map();
-    fixes.push('Initialized area performance tracking');
-  }
-
-  if (!this.subareaPerformance) {
-    this.subareaPerformance = new Map();
-    fixes.push('Initialized subarea performance tracking');
-  }
-
-  return { warnings, fixes };
-};
-
-// Add JSON transform to include virtual fields and area mapping
-userTestRecordSchema.set('toJSON', { 
-  virtuals: true,
-  transform: function(doc, ret) {
-    delete ret._id;
-    delete ret.__v;
-    
-    // Convert area performance map to object with area names
-    if (ret.areaPerformance) {
-      const areaPerformanceObj = {};
-      for (const [areaNum, stats] of Object.entries(ret.areaPerformance)) {
-        const areaName = AREA_MAPPING[parseInt(areaNum)] || `Area ${areaNum}`;
-        areaPerformanceObj[areaName] = {
-          ...stats,
-          areaNumber: parseInt(areaNum)
-        };
+      $set: {
+        'statistics.lastTestDate': doc.completion.completedAt
       }
-      ret.areaPerformanceWithNames = areaPerformanceObj;
-    }
-    
-    return ret;
+    });
+  } catch (error) {
+    console.error('Error updating user statistics:', error);
   }
 });
 
 module.exports = mongoose.model('UserTestRecord', userTestRecordSchema);
-module.exports.AREA_MAPPING = AREA_MAPPING;
