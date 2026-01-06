@@ -5,8 +5,7 @@ const testSessionSchema = new mongoose.Schema({
   sessionId: {
     type: String,
     required: true,
-    unique: true,
-    index: true
+    unique: true
   },
   testId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -17,8 +16,7 @@ const testSessionSchema = new mongoose.Schema({
     type: String,
     required: true,
     lowercase: true,
-    trim: true,
-    index: true
+    trim: true
   },
   startTime: {
     type: Date,
@@ -53,7 +51,9 @@ const testSessionSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Add TTL index to automatically delete sessions after 24 hours
-testSessionSchema.index({ createdAt: 1 }, { expireAfterSeconds: 86400 });
+// Add indexes using ONLY schema.index() method to avoid duplicates
+testSessionSchema.index({ sessionId: 1 });
+testSessionSchema.index({ email: 1 });
+testSessionSchema.index({ createdAt: 1 }, { expireAfterSeconds: 86400 }); // TTL index for 24 hours
 
 module.exports = mongoose.model('TestSession', testSessionSchema);

@@ -7,8 +7,7 @@ const testSchema = new mongoose.Schema({
     required: [true, 'Test name is required'],
     trim: true,
     minlength: [3, 'Test name must be at least 3 characters'],
-    maxlength: [200, 'Test name cannot exceed 200 characters'],
-    index: true
+    maxlength: [200, 'Test name cannot exceed 200 characters']
   },
   testType: {
     type: String,
@@ -16,8 +15,7 @@ const testSchema = new mongoose.Schema({
       values: ['PYQ', 'Practice', 'Assessment'],
       message: 'Test type must be PYQ, Practice, or Assessment'
     },
-    default: 'Practice',
-    index: true
+    default: 'Practice'
   },
   year: {
     type: Number,
@@ -142,19 +140,15 @@ const testSchema = new mongoose.Schema({
         default: 'Medium',
         trim: true
       },
-      // Area field as number only - no validation for range to allow flexibility
       area: {
         type: Number,
-        default: 1,
-        index: true
+        default: 1
       },
-      // Subarea field for more specific categorization
       subarea: {
         type: String,
         trim: true,
         maxlength: [100, 'Subarea cannot exceed 100 characters'],
-        default: '',
-        index: true
+        default: ''
       },
       options: {
         type: [{
@@ -258,6 +252,17 @@ testSchema.virtual('stats').get(function() {
   };
 });
 
+// Add indexes using ONLY schema.index() method to avoid duplicates
+testSchema.index({ createdAt: -1 });
+testSchema.index({ name: 1 });
+testSchema.index({ year: 1, paper: 1 });
+testSchema.index({ isActive: 1 });
+testSchema.index({ testType: 1 });
+testSchema.index({ testType: 1, createdAt: -1 });
+testSchema.index({ 'cutoff.Gen': 1 });
+testSchema.index({ 'questions.area': 1 });
+testSchema.index({ 'questions.subarea': 1 });
+
 // Flexible pre-save middleware
 testSchema.pre('save', function(next) {
   try {
@@ -358,17 +363,6 @@ testSchema.pre('save', function(next) {
     next();
   }
 });
-
-// Add indexes for better performance
-testSchema.index({ createdAt: -1 });
-testSchema.index({ name: 1 });
-testSchema.index({ year: 1, paper: 1 });
-testSchema.index({ isActive: 1 });
-testSchema.index({ testType: 1 });
-testSchema.index({ testType: 1, createdAt: -1 });
-testSchema.index({ 'cutoff.Gen': 1 });
-testSchema.index({ 'questions.area': 1 });
-testSchema.index({ 'questions.subarea': 1 });
 
 // Static methods
 testSchema.statics.findActive = function() {

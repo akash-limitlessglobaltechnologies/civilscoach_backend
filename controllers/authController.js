@@ -1,501 +1,512 @@
-const { validateEmail } = require('../utils/validation');
-const { validatePhoneNumber, sendOTPSMS, verifySMSOTP } = require('../services/smsService');
-const { sendOTPEmail, sendWelcomeEmail } = require('../services/emailService');
-const { generateToken } = require('../middleware/auth');
-const { CustomError } = require('../middleware/errorHandler');
 const User = require('../models/User');
+const { generateToken } = require('../middleware/auth');
+const { sendOTPEmail } = require('../services/emailService');
+const { sendOTPSMS, verifySMSOTP } = require('../services/smsService');
+const { CustomError } = require('../middleware/errorHandler');
+const { validationResult } = require('express-validator');
 
-// In-memory OTP storage (In production, use Redis or database)
-const otpStorage = new Map();
-const OTP_EXPIRY_TIME = 10 * 60 * 1000; // 10 minutes
-const MAX_OTP_ATTEMPTS = 3;
+// Temporary storage for OTP sessions (in production, use Redis)
+const otpSessions = new Map();
 
-// Generate 6-digit OTP
+// OTP generation utility
 const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// Clean up expired OTPs
-const cleanupExpiredOTPs = () => {
-  const now = Date.now();
-  for (const [key, data] of otpStorage.entries()) {
-    if (data.expiresAt < now) {
-      otpStorage.delete(key);
-    }
-  }
+// Create session key utility
+const createSessionKey = () => {
+  return Math.random().toString(36).substring(2) + Date.now().toString(36);
 };
 
-// Run cleanup every 5 minutes
-setInterval(cleanupExpiredOTPs, 5 * 60 * 1000);
+// SIGNUP FLOW
 
-// Helper function to find or create user
-const findOrCreateUser = async (email, phoneNumber, ipAddress) => {
-  const normalizedEmail = email.toLowerCase().trim();
-  const cleanPhoneNumber = phoneNumber.trim();
-  
-  // Try to find existing user by email or phone
-  let user = await User.findByEmailOrPhone(normalizedEmail, cleanPhoneNumber);
-  
-  if (!user) {
-    // Create new user
-    console.log('Creating new user:', { email: normalizedEmail, phone: cleanPhoneNumber });
-    
-    user = new User({
-      email: normalizedEmail,
-      phoneNumber: cleanPhoneNumber,
-      security: {
-        lastLoginIP: ipAddress,
-        loginCount: 1,
-        lastLoginAt: new Date()
-      },
-      metadata: {
-        registrationSource: 'web'
-      }
-    });
-    
-    await user.save();
-    console.log('New user created successfully:', user._id);
-  } else {
-    // Update existing user's phone number if different
-    let updated = false;
-    
-    if (user.phoneNumber !== cleanPhoneNumber) {
-      user.phoneNumber = cleanPhoneNumber;
-      updated = true;
-    }
-    
-    if (updated) {
-      await user.save();
-      console.log('User information updated:', user._id);
-    }
-  }
-  
-  return user;
-};
-
-// Step 1: Send OTP to email and phone
-const sendOTP = async (req, res, next) => {
+// Step 1: Send OTP for Signup
+const sendSignupOTP = async (req, res, next) => {
   try {
+    // Handle validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        type: 'VALIDATION_ERROR',
+        errors: errors.array()
+      });
+    }
+
     const { email, phoneNumber } = req.body;
-    const clientIP = req.ip || req.connection.remoteAddress || '';
 
-    // Validate inputs
-    if (!email || !phoneNumber) {
-      return res.status(400).json({
+    // Check if user already exists
+    const existingUser = await User.findByEmailOrPhone(email, phoneNumber);
+    if (existingUser) {
+      return res.status(409).json({
         success: false,
-        message: 'Email and phone number are required',
-        type: 'VALIDATION_ERROR'
+        message: 'User already exists with this email or phone number',
+        type: 'USER_EXISTS'
       });
     }
 
-    // Validate email format
-    if (!validateEmail(email)) {
+    // Generate OTPs
+    const emailOTP = generateOTP();
+    const phoneOTP = generateOTP();
+    const sessionKey = createSessionKey();
+
+    // Store session data
+    const sessionData = {
+      email: email.toLowerCase().trim(),
+      phoneNumber: phoneNumber.trim(),
+      emailOTP,
+      phoneOTP,
+      emailVerified: false,
+      phoneVerified: false,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + (10 * 60 * 1000), // 10 minutes
+      type: 'signup',
+      attempts: 0
+    };
+
+    otpSessions.set(sessionKey, sessionData);
+
+    // Send OTP emails and SMS
+    try {
+      await sendOTPEmail(email, emailOTP, 'signup');
+      console.log('📧 Email OTP sent successfully to:', email);
+    } catch (emailError) {
+      console.error('📧 Email OTP failed:', emailError.message);
+      // Continue with phone OTP even if email fails
+    }
+
+    try {
+      await sendOTPSMS(phoneNumber);
+      console.log('📱 SMS OTP sent successfully to:', phoneNumber);
+    } catch (smsError) {
+      console.error('📱 SMS OTP failed:', smsError.message);
+      // Continue even if SMS fails, user can retry
+    }
+
+    res.json({
+      success: true,
+      message: 'OTP sent successfully to your email and phone',
+      sessionKey,
+      email: email.toLowerCase().trim(),
+      phoneNumber: phoneNumber.trim(),
+      expiresAt: sessionData.expiresAt,
+      type: 'signup'
+    });
+
+  } catch (error) {
+    console.error('Send signup OTP error:', error);
+    next(new CustomError('Failed to send OTP', 500, 'OTP_SEND_ERROR'));
+  }
+};
+
+// Step 2: Verify OTP for Signup
+const verifySignupOTP = async (req, res, next) => {
+  try {
+    // Handle validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide a valid email address',
-        type: 'INVALID_EMAIL'
+        message: 'Validation failed',
+        type: 'VALIDATION_ERROR',
+        errors: errors.array()
       });
     }
 
-    // Validate phone number format
-    if (!validatePhoneNumber(phoneNumber)) {
+    const { sessionKey, emailOTP, phoneOTP } = req.body;
+
+    // Get session data
+    const sessionData = otpSessions.get(sessionKey);
+    if (!sessionData) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide a valid phone number',
-        type: 'INVALID_PHONE'
+        message: 'Invalid or expired session',
+        type: 'INVALID_SESSION'
       });
     }
 
-    const normalizedEmail = email.toLowerCase().trim();
-    const sessionKey = `${normalizedEmail}_${phoneNumber}`;
+    // Check session expiry
+    if (Date.now() > sessionData.expiresAt) {
+      otpSessions.delete(sessionKey);
+      return res.status(400).json({
+        success: false,
+        message: 'OTP session expired. Please request new OTP.',
+        type: 'SESSION_EXPIRED'
+      });
+    }
 
-    // Check if there's a recent OTP request
-    const existingOTP = otpStorage.get(sessionKey);
-    if (existingOTP) {
-      const timeSinceLastRequest = Date.now() - existingOTP.requestedAt;
-      if (timeSinceLastRequest < 60000) { // 1 minute cooldown
-        return res.status(429).json({
+    // Check session type
+    if (sessionData.type !== 'signup') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid session type for signup',
+        type: 'INVALID_SESSION_TYPE'
+      });
+    }
+
+    // Increment verification attempts
+    sessionData.attempts += 1;
+    if (sessionData.attempts > 5) {
+      otpSessions.delete(sessionKey);
+      return res.status(429).json({
+        success: false,
+        message: 'Too many verification attempts. Please request new OTP.',
+        type: 'TOO_MANY_ATTEMPTS'
+      });
+    }
+
+    let emailVerified = sessionData.emailVerified;
+    let phoneVerified = sessionData.phoneVerified;
+
+    // Verify Email OTP
+    if (!emailVerified && emailOTP) {
+      if (emailOTP.trim() === sessionData.emailOTP) {
+        emailVerified = true;
+        sessionData.emailVerified = true;
+        console.log('✅ Email OTP verified for:', sessionData.email);
+      } else {
+        return res.status(400).json({
           success: false,
-          message: 'Please wait before requesting a new OTP',
-          retryAfter: Math.ceil((60000 - timeSinceLastRequest) / 1000),
-          type: 'RATE_LIMITED'
+          message: 'Invalid email OTP',
+          type: 'INVALID_EMAIL_OTP',
+          emailVerified: false,
+          phoneVerified: sessionData.phoneVerified
         });
       }
     }
 
-    // Check if user exists or create new user (but don't save yet)
-    try {
-      const existingUser = await User.findByEmailOrPhone(normalizedEmail, phoneNumber);
-      console.log('User lookup result:', existingUser ? 'Found existing user' : 'New user will be created');
-    } catch (error) {
-      console.error('User lookup error:', error);
-      // Continue with OTP process even if user lookup fails
-    }
-
-    // Generate OTP for email only (Twilio handles SMS OTP generation)
-    const emailOTP = generateOTP();
-
-    console.log(`🔐 Generated OTPs for ${normalizedEmail}:`, {
-      email: emailOTP,
-      phone: 'handled_by_twilio_verify_service',
-      sessionKey
-    });
-
-    // Store OTPs with expiration and user context
-    otpStorage.set(sessionKey, {
-      emailOTP,
-      email: normalizedEmail,
-      phoneNumber,
-      clientIP,
-      expiresAt: Date.now() + OTP_EXPIRY_TIME,
-      requestedAt: Date.now(),
-      verified: {
-        email: false,
-        phone: false
-      },
-      attempts: 0
-    });
-
-    // Send OTPs simultaneously (Twilio will generate its own SMS OTP)
-    const [emailResult, smsResult] = await Promise.allSettled([
-      sendOTPEmail(normalizedEmail, emailOTP, 'login'),
-      sendOTPSMS(phoneNumber) // No OTP parameter - Twilio generates it
-    ]);
-
-    // Check results
-    const emailSent = emailResult.status === 'fulfilled';
-    const smsSent = smsResult.status === 'fulfilled';
-
-    if (!emailSent && !smsSent) {
-      // Remove from storage if both failed
-      otpStorage.delete(sessionKey);
-      
-      console.error('❌ Both OTP sending failed:', {
-        emailError: emailResult.reason?.message,
-        smsError: smsResult.reason?.message
-      });
-
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to send OTP to both email and phone. Please try again.',
-        type: 'OTP_SEND_FAILED',
-        errors: {
-          email: emailResult.reason?.message,
-          sms: smsResult.reason?.message
+    // Verify Phone OTP using Twilio
+    if (!phoneVerified && phoneOTP) {
+      try {
+        const phoneVerification = await verifySMSOTP(sessionData.phoneNumber, phoneOTP.trim());
+        if (phoneVerification.success) {
+          phoneVerified = true;
+          sessionData.phoneVerified = true;
+          console.log('✅ Phone OTP verified for:', sessionData.phoneNumber);
+        } else {
+          return res.status(400).json({
+            success: false,
+            message: phoneVerification.error || 'Invalid phone OTP',
+            type: 'INVALID_PHONE_OTP',
+            emailVerified: sessionData.emailVerified,
+            phoneVerified: false
+          });
         }
+      } catch (error) {
+        console.error('Phone OTP verification error:', error);
+        return res.status(400).json({
+          success: false,
+          message: 'Phone OTP verification failed',
+          type: 'PHONE_OTP_ERROR',
+          emailVerified: sessionData.emailVerified,
+          phoneVerified: false
+        });
+      }
+    }
+
+    // Check if both OTPs are verified
+    if (emailVerified && phoneVerified) {
+      // Mark session as verified
+      sessionData.verified = true;
+      sessionData.verifiedAt = Date.now();
+      
+      res.json({
+        success: true,
+        message: 'OTP verification successful. Please create your password.',
+        sessionKey,
+        emailVerified: true,
+        phoneVerified: true,
+        nextStep: 'create_password'
+      });
+    } else {
+      res.json({
+        success: true,
+        message: 'Partial verification successful',
+        sessionKey,
+        emailVerified,
+        phoneVerified,
+        nextStep: 'verify_remaining_otp'
       });
     }
-
-    // Prepare response
-    const response = {
-      success: true,
-      message: 'OTP sent successfully',
-      sessionKey,
-      expiresIn: Math.floor(OTP_EXPIRY_TIME / 1000), // in seconds
-      sent: {
-        email: emailSent,
-        sms: smsSent
-      }
-    };
-
-    // Add warnings for partial failures
-    if (!emailSent) {
-      response.warnings = response.warnings || [];
-      response.warnings.push(`Failed to send email OTP: ${emailResult.reason?.message}`);
-    }
-    
-    if (!smsSent) {
-      response.warnings = response.warnings || [];
-      response.warnings.push(`Failed to send SMS OTP: ${smsResult.reason?.message}`);
-    }
-
-    console.log('✅ OTP send result:', {
-      sessionKey,
-      email: normalizedEmail,
-      phone: phoneNumber,
-      emailSent,
-      smsSent
-    });
-
-    res.json(response);
 
   } catch (error) {
-    console.error('🚨 Send OTP error:', error);
-    next(error);
+    console.error('Verify signup OTP error:', error);
+    next(new CustomError('OTP verification failed', 500, 'OTP_VERIFICATION_ERROR'));
   }
 };
 
-// Step 2: Verify OTPs and login
-const verifyOTPAndLogin = async (req, res, next) => {
+// Step 3: Complete Signup with Password
+const completeSignup = async (req, res, next) => {
   try {
-    const { sessionKey, emailOTP, phoneOTP } = req.body;
-    const clientIP = req.ip || req.connection.remoteAddress || '';
-
-    // Validate inputs
-    if (!sessionKey || !emailOTP || !phoneOTP) {
+    // Handle validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
       return res.status(400).json({
         success: false,
-        message: 'Session key and both OTPs are required',
-        type: 'VALIDATION_ERROR'
+        message: 'Validation failed',
+        type: 'VALIDATION_ERROR',
+        errors: errors.array()
       });
     }
 
-    // Get stored OTP data
-    const otpData = otpStorage.get(sessionKey);
-    if (!otpData) {
-      return res.status(404).json({
-        success: false,
-        message: 'Invalid or expired session. Please request a new OTP.',
-        type: 'SESSION_NOT_FOUND'
-      });
-    }
+    const { sessionKey, password, firstName, lastName } = req.body;
 
-    // Check expiration
-    if (Date.now() > otpData.expiresAt) {
-      otpStorage.delete(sessionKey);
+    // Get session data
+    const sessionData = otpSessions.get(sessionKey);
+    if (!sessionData || !sessionData.verified) {
       return res.status(400).json({
         success: false,
-        message: 'OTP expired. Please request a new OTP.',
-        type: 'OTP_EXPIRED'
+        message: 'Invalid session or OTP not verified',
+        type: 'INVALID_SESSION'
       });
     }
 
-    // Check attempt limit
-    if (otpData.attempts >= MAX_OTP_ATTEMPTS) {
-      otpStorage.delete(sessionKey);
-      return res.status(400).json({
+    // Check if user already exists (double check)
+    const existingUser = await User.findByEmailOrPhone(sessionData.email, sessionData.phoneNumber);
+    if (existingUser) {
+      otpSessions.delete(sessionKey);
+      return res.status(409).json({
         success: false,
-        message: 'Maximum verification attempts exceeded. Please request a new OTP.',
-        type: 'MAX_ATTEMPTS_EXCEEDED'
+        message: 'User already exists',
+        type: 'USER_EXISTS'
       });
     }
 
-    // Increment attempts
-    otpData.attempts++;
-
-    // Verify OTPs
-    const emailOTPValid = emailOTP.trim() === otpData.emailOTP;
-    
-    // Verify SMS OTP using Twilio Verify Service
-    let phoneOTPValid = false;
-    let smsVerificationError = null;
-    
-    try {
-      const smsVerification = await verifySMSOTP(otpData.phoneNumber, phoneOTP.trim());
-      phoneOTPValid = smsVerification.success;
-      if (!phoneOTPValid) {
-        smsVerificationError = smsVerification.error || 'Invalid SMS OTP';
+    // Create new user
+    const userData = {
+      email: sessionData.email,
+      phoneNumber: sessionData.phoneNumber,
+      password,
+      profile: {
+        firstName: firstName || '',
+        lastName: lastName || ''
+      },
+      security: {
+        isVerified: true,
+        lastLoginAt: new Date(),
+        loginCount: 1,
+        lastLoginIP: req.ip || req.connection.remoteAddress || ''
+      },
+      metadata: {
+        registrationSource: 'web',
+        deviceInfo: req.get('User-Agent') || ''
       }
-    } catch (error) {
-      console.error('📱 SMS verification error:', error.message);
-      smsVerificationError = error.message;
-    }
-
-    console.log(`🔍 OTP verification for ${sessionKey}:`, {
-      emailOTPValid,
-      phoneOTPValid,
-      attempts: otpData.attempts,
-      providedEmailOTP: emailOTP,
-      providedPhoneOTP: phoneOTP,
-      storedEmailOTP: otpData.emailOTP,
-      smsVerificationMethod: 'twilio_verify_service',
-      smsError: smsVerificationError || 'none'
-    });
-
-    if (!emailOTPValid || !phoneOTPValid) {
-      // Save updated attempts count
-      otpStorage.set(sessionKey, otpData);
-      
-      const errors = [];
-      if (!emailOTPValid) errors.push('email');
-      if (!phoneOTPValid) errors.push('SMS');
-      
-      let errorMessage = `Invalid OTP for: ${errors.join(' and ')}`;
-      if (!phoneOTPValid && smsVerificationError) {
-        errorMessage += ` (SMS Error: ${smsVerificationError})`;
-      }
-      
-      return res.status(400).json({
-        success: false,
-        message: errorMessage,
-        type: 'INVALID_OTP',
-        invalidOTPs: errors,
-        attemptsRemaining: MAX_OTP_ATTEMPTS - otpData.attempts,
-        smsError: smsVerificationError
-      });
-    }
-
-    // Both OTPs are valid - find or create user
-    let user;
-    try {
-      user = await findOrCreateUser(otpData.email, otpData.phoneNumber, clientIP);
-      
-      // Update login information
-      await user.updateLoginInfo(clientIP);
-      
-      console.log('User login info updated:', {
-        userId: user._id,
-        email: user.email,
-        loginCount: user.security.loginCount
-      });
-    } catch (error) {
-      console.error('User creation/update error:', error);
-      
-      // If user operations fail, still allow login but log the error
-      user = {
-        _id: 'temp_user_id',
-        email: otpData.email,
-        phoneNumber: otpData.phoneNumber
-      };
-    }
-
-    // Generate JWT token with user ID
-    const tokenPayload = {
-      userId: user._id,
-      email: otpData.email,
-      phoneNumber: otpData.phoneNumber,
-      loginTime: new Date().toISOString(),
-      type: 'user'
     };
 
-    const token = generateToken(tokenPayload);
+    const newUser = new User(userData);
+    await newUser.save();
 
-    // Clean up OTP data
-    otpStorage.delete(sessionKey);
+    // Generate JWT token
+    const token = generateToken({
+      userId: newUser._id,
+      email: newUser.email,
+      phoneNumber: newUser.phoneNumber
+    });
 
-    // Send welcome email for new users (async, don't wait)
-    if (user.security?.loginCount === 1) {
-      sendWelcomeEmail(otpData.email, user.displayName).catch(error => {
-        console.error('📧 Welcome email failed:', error.message);
+    // Clean up session
+    otpSessions.delete(sessionKey);
+
+    // Send welcome email (fire and forget)
+    try {
+      const { sendWelcomeEmail } = require('../services/emailService');
+      await sendWelcomeEmail(newUser.email);
+    } catch (emailError) {
+      console.error('Welcome email failed:', emailError.message);
+    }
+
+    console.log(`✅ User signup completed: ${newUser.email}`);
+
+    res.status(201).json({
+      success: true,
+      message: 'Account created successfully',
+      user: newUser.getPublicProfile(),
+      token,
+      type: 'SIGNUP_SUCCESS'
+    });
+
+  } catch (error) {
+    console.error('Complete signup error:', error);
+    next(new CustomError('Account creation failed', 500, 'SIGNUP_ERROR'));
+  }
+};
+
+// LOGIN FLOW
+
+// Login with email/phone and password
+const login = async (req, res, next) => {
+  try {
+    // Handle validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        type: 'VALIDATION_ERROR',
+        errors: errors.array()
       });
     }
 
-    console.log('✅ Successful login:', {
+    const { identifier, password } = req.body; // identifier can be email or phone
+    const clientIP = req.ip || req.connection.remoteAddress || '';
+
+    // Find user by email or phone
+    const user = await User.findByEmailOrPhone(identifier, identifier);
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials',
+        type: 'INVALID_CREDENTIALS'
+      });
+    }
+
+    // Check if account is locked
+    if (user.isLocked) {
+      return res.status(423).json({
+        success: false,
+        message: 'Account is temporarily locked due to too many failed login attempts. Please try again later.',
+        type: 'ACCOUNT_LOCKED'
+      });
+    }
+
+    // Check if account is active and verified
+    if (!user.security.isActive) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account is deactivated. Please contact support.',
+        type: 'ACCOUNT_DEACTIVATED'
+      });
+    }
+
+    if (!user.security.isVerified) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account is not verified. Please complete the signup process.',
+        type: 'ACCOUNT_NOT_VERIFIED'
+      });
+    }
+
+    // Verify password
+    const isPasswordValid = await user.comparePassword(password);
+    if (!isPasswordValid) {
+      // Increment failed login attempts
+      await user.incFailedLoginAttempts();
+      
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials',
+        type: 'INVALID_CREDENTIALS'
+      });
+    }
+
+    // Update login information
+    await user.updateLoginInfo(clientIP);
+
+    // Generate JWT token
+    const token = generateToken({
       userId: user._id,
-      email: otpData.email,
-      phone: otpData.phoneNumber,
-      sessionKey,
-      isNewUser: user.security?.loginCount === 1
+      email: user.email,
+      phoneNumber: user.phoneNumber
     });
+
+    console.log(`✅ User login successful: ${user.email}`);
 
     res.json({
       success: true,
       message: 'Login successful',
+      user: user.getPublicProfile(),
       token,
-      user: {
-        id: user._id,
-        email: otpData.email,
-        phoneNumber: otpData.phoneNumber,
-        displayName: user.displayName || user.email?.split('@')[0] || 'User',
-        loginTime: tokenPayload.loginTime,
-        profile: user.profile ? {
-          firstName: user.profile.firstName,
-          lastName: user.profile.lastName,
-          category: user.profile.category
-        } : {},
-        subscription: user.subscription ? {
-          plan: user.subscription.plan,
-          remainingTests: user.remainingTests
-        } : { plan: 'Free', remainingTests: 10 }
-      },
-      expiresIn: process.env.JWT_EXPIRES_IN || '7d',
-      isNewUser: user.security?.loginCount === 1
+      type: 'LOGIN_SUCCESS'
     });
 
   } catch (error) {
-    console.error('🚨 Verify OTP error:', error);
-    next(error);
+    console.error('Login error:', error);
+    next(new CustomError('Login failed', 500, 'LOGIN_ERROR'));
   }
 };
 
-// Resend OTP (unchanged but with better user context)
+// UTILITY FUNCTIONS
+
+// Resend OTP (works for both signup and login flows)
 const resendOTP = async (req, res, next) => {
   try {
-    const { sessionKey, type } = req.body; // type: 'email' or 'sms' or 'both'
+    const { sessionKey, type = 'both' } = req.body;
 
-    if (!sessionKey) {
+    const sessionData = otpSessions.get(sessionKey);
+    if (!sessionData) {
       return res.status(400).json({
         success: false,
-        message: 'Session key is required',
-        type: 'VALIDATION_ERROR'
+        message: 'Invalid or expired session',
+        type: 'INVALID_SESSION'
       });
     }
 
-    const otpData = otpStorage.get(sessionKey);
-    if (!otpData) {
-      return res.status(404).json({
-        success: false,
-        message: 'Invalid or expired session. Please start a new login process.',
-        type: 'SESSION_NOT_FOUND'
-      });
-    }
-
-    // Check if enough time has passed since last request (30 seconds cooldown)
-    const timeSinceLastRequest = Date.now() - otpData.requestedAt;
-    if (timeSinceLastRequest < 30000) {
+    // Check if too many resend attempts
+    if (sessionData.resendCount >= 3) {
       return res.status(429).json({
         success: false,
-        message: 'Please wait before requesting OTP again',
-        retryAfter: Math.ceil((30000 - timeSinceLastRequest) / 1000),
-        type: 'RATE_LIMITED'
+        message: 'Too many resend attempts. Please start over.',
+        type: 'TOO_MANY_RESENDS'
       });
     }
 
-    // Generate new OTPs if needed
+    // Generate new OTPs
     if (type === 'email' || type === 'both') {
-      otpData.emailOTP = generateOTP();
+      sessionData.emailOTP = generateOTP();
+      sessionData.emailVerified = false;
     }
 
-    // Update expiration and request time
-    otpData.expiresAt = Date.now() + OTP_EXPIRY_TIME;
-    otpData.requestedAt = Date.now();
-    otpData.attempts = 0; // Reset attempts on resend
-
-    // Send OTPs based on type
-    const sendPromises = [];
-    
-    if (type === 'email' || type === 'both') {
-      sendPromises.push(sendOTPEmail(otpData.email, otpData.emailOTP, 'resend'));
-    }
     if (type === 'sms' || type === 'both') {
-      sendPromises.push(sendOTPSMS(otpData.phoneNumber));
+      sessionData.phoneOTP = generateOTP();
+      sessionData.phoneVerified = false;
     }
 
-    const results = await Promise.allSettled(sendPromises);
-    
-    // Update storage
-    otpStorage.set(sessionKey, otpData);
+    // Update session
+    sessionData.resendCount = (sessionData.resendCount || 0) + 1;
+    sessionData.expiresAt = Date.now() + (10 * 60 * 1000); // Extend expiry
 
-    console.log('🔄 OTP resent:', {
-      sessionKey,
-      type,
-      email: otpData.email,
-      phone: otpData.phoneNumber
-    });
-
-    res.json({
-      success: true,
-      message: `OTP resent successfully to ${type}`,
-      expiresIn: Math.floor(OTP_EXPIRY_TIME / 1000),
-      sent: {
-        email: type === 'email' || type === 'both',
-        sms: type === 'sms' || type === 'both'
+    // Send OTPs
+    try {
+      if (type === 'email' || type === 'both') {
+        await sendOTPEmail(sessionData.email, sessionData.emailOTP, sessionData.type);
+        console.log('📧 Email OTP resent to:', sessionData.email);
       }
-    });
+
+      if (type === 'sms' || type === 'both') {
+        await sendOTPSMS(sessionData.phoneNumber);
+        console.log('📱 SMS OTP resent to:', sessionData.phoneNumber);
+      }
+
+      res.json({
+        success: true,
+        message: 'OTP resent successfully',
+        sessionKey,
+        type,
+        expiresAt: sessionData.expiresAt
+      });
+
+    } catch (error) {
+      console.error('Resend OTP error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to resend OTP. Please try again.',
+        type: 'RESEND_FAILED'
+      });
+    }
 
   } catch (error) {
-    console.error('🚨 Resend OTP error:', error);
-    next(error);
+    console.error('Resend OTP error:', error);
+    next(new CustomError('Failed to resend OTP', 500, 'RESEND_ERROR'));
   }
 };
 
-// Get session status (unchanged)
+// Get session status
 const getSessionStatus = async (req, res, next) => {
   try {
     const { sessionKey } = req.params;
 
-    const otpData = otpStorage.get(sessionKey);
-    if (!otpData) {
+    const sessionData = otpSessions.get(sessionKey);
+    if (!sessionData) {
       return res.status(404).json({
         success: false,
         message: 'Session not found',
@@ -503,94 +514,114 @@ const getSessionStatus = async (req, res, next) => {
       });
     }
 
-    const timeRemaining = Math.max(0, otpData.expiresAt - Date.now());
-    
+    const now = Date.now();
+    const isExpired = now > sessionData.expiresAt;
+
+    if (isExpired) {
+      otpSessions.delete(sessionKey);
+      return res.status(400).json({
+        success: false,
+        message: 'Session expired',
+        type: 'SESSION_EXPIRED'
+      });
+    }
+
     res.json({
       success: true,
-      sessionKey,
-      expiresIn: Math.floor(timeRemaining / 1000),
-      attemptsRemaining: MAX_OTP_ATTEMPTS - otpData.attempts,
-      verified: otpData.verified
+      status: {
+        sessionKey,
+        type: sessionData.type,
+        emailVerified: sessionData.emailVerified || false,
+        phoneVerified: sessionData.phoneVerified || false,
+        verified: sessionData.verified || false,
+        expiresAt: sessionData.expiresAt,
+        timeRemaining: Math.max(0, sessionData.expiresAt - now),
+        attempts: sessionData.attempts || 0,
+        resendCount: sessionData.resendCount || 0
+      }
     });
 
   } catch (error) {
-    console.error('🚨 Session status error:', error);
-    next(error);
+    console.error('Get session status error:', error);
+    next(new CustomError('Failed to get session status', 500, 'SESSION_STATUS_ERROR'));
   }
 };
 
-// Verify current token (enhanced with user data)
+// Verify current token (for protected routes)
 const verifyToken = async (req, res, next) => {
   try {
-    // User info is already available in req.user from auth middleware
-    let userData = req.user;
-    
-    // If we have a userId, fetch fresh user data
-    if (req.user.userId) {
-      try {
-        const user = await User.findById(req.user.userId);
-        if (user) {
-          userData = {
-            ...req.user,
-            ...user.getPublicProfile(),
-            subscription: {
-              ...user.subscription.toObject(),
-              status: user.subscriptionStatus,
-              remainingTests: user.remainingTests
-            }
-          };
-        }
-      } catch (error) {
-        console.error('Error fetching user data for token verification:', error);
-        // Continue with token data if user fetch fails
-      }
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+        type: 'USER_NOT_FOUND'
+      });
     }
-    
+
     res.json({
       success: true,
-      user: userData,
-      message: 'Token is valid'
+      message: 'Token is valid',
+      user: user.getPublicProfile()
     });
+
   } catch (error) {
-    console.error('🚨 Token verification error:', error);
-    next(error);
+    console.error('Token verification error:', error);
+    next(new CustomError('Token verification failed', 500, 'TOKEN_VERIFICATION_ERROR'));
   }
 };
 
-// Logout (enhanced with user tracking)
+// Logout
 const logout = async (req, res, next) => {
   try {
-    // Update user's last active time if we have userId
-    if (req.user?.userId) {
-      try {
-        await User.findByIdAndUpdate(req.user.userId, {
-          $set: { 'statistics.lastActiveDate': new Date() }
-        });
-      } catch (error) {
-        console.error('Error updating user last active time:', error);
-      }
-    }
-    
-    console.log('User logged out:', {
-      userId: req.user?.userId,
-      email: req.user?.email
-    });
-    
+    // In a stateless JWT system, logout is mainly client-side
+    // But we can log the event for analytics
+    console.log(`User logout: ${req.user.email}`);
+
     res.json({
       success: true,
-      message: 'Logged out successfully'
+      message: 'Logout successful'
     });
+
   } catch (error) {
-    console.error('🚨 Logout error:', error);
-    next(error);
+    console.error('Logout error:', error);
+    next(new CustomError('Logout failed', 500, 'LOGOUT_ERROR'));
   }
 };
 
+// Clean up expired sessions (should be called periodically)
+const cleanupExpiredSessions = () => {
+  const now = Date.now();
+  let cleanedCount = 0;
+
+  for (const [sessionKey, sessionData] of otpSessions.entries()) {
+    if (now > sessionData.expiresAt) {
+      otpSessions.delete(sessionKey);
+      cleanedCount++;
+    }
+  }
+
+  if (cleanedCount > 0) {
+    console.log(`🧹 Cleaned up ${cleanedCount} expired OTP sessions`);
+  }
+};
+
+// Run cleanup every 30 minutes
+setInterval(cleanupExpiredSessions, 30 * 60 * 1000);
+
 module.exports = {
-  sendOTP,
-  verifyOTPAndLogin,
+  // Signup flow
+  sendSignupOTP,
+  verifySignupOTP,
+  completeSignup,
+  
+  // Login flow
+  login,
+  
+  // Utility functions
   resendOTP,
   getSessionStatus,
   verifyToken,
-  logout
+  logout,
+  cleanupExpiredSessions
 };

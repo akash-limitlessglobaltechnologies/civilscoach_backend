@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
 
-// User Schema with comprehensive profile management
+// User Schema with comprehensive profile management and password authentication
 const userSchema = new mongoose.Schema({
   email: {
     type: String,
@@ -8,7 +9,6 @@ const userSchema = new mongoose.Schema({
     unique: true,
     lowercase: true,
     trim: true,
-    index: true,
     validate: {
       validator: function(email) {
         return /^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/.test(email);
@@ -19,8 +19,8 @@ const userSchema = new mongoose.Schema({
   phoneNumber: {
     type: String,
     required: [true, 'Phone number is required'],
+    unique: true,
     trim: true,
-    index: true,
     validate: {
       validator: function(phone) {
         // Support international format and Indian mobile numbers
@@ -30,6 +30,23 @@ const userSchema = new mongoose.Schema({
         return indianMobileRegex.test(cleanNumber) || internationalRegex.test(cleanNumber);
       },
       message: 'Please provide a valid phone number'
+    }
+  },
+  password: {
+    type: String,
+    required: [true, 'Password is required'],
+    minlength: [8, 'Password must be at least 8 characters long'],
+    validate: {
+      validator: function(password) {
+        // Skip validation if password is already hashed (starts with $2b$ for bcrypt)
+        if (password.startsWith('$2b$')) {
+          return true;
+        }
+        
+        // Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character
+        return /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/.test(password);
+      },
+      message: 'Password must contain at least 8 characters with one uppercase letter, one lowercase letter, one number, and one special character'
     }
   },
   profile: {
@@ -170,7 +187,7 @@ const userSchema = new mongoose.Schema({
     },
     isVerified: {
       type: Boolean,
-      default: true // Since they verify via OTP during registration
+      default: false // Will be set to true after OTP verification during signup
     },
     accountLocked: {
       type: Boolean,
@@ -179,6 +196,13 @@ const userSchema = new mongoose.Schema({
     lockReason: {
       type: String,
       default: ''
+    },
+    failedLoginAttempts: {
+      type: Number,
+      default: 0
+    },
+    lockUntil: {
+      type: Date
     }
   },
   metadata: {
@@ -206,7 +230,7 @@ const userSchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
-// Indexes for better performance
+// Remove duplicate indexes by only using schema.index() method (not index: true in field definition)
 userSchema.index({ email: 1 });
 userSchema.index({ phoneNumber: 1 });
 userSchema.index({ createdAt: -1 });
@@ -214,6 +238,7 @@ userSchema.index({ 'security.lastLoginAt': -1 });
 userSchema.index({ 'subscription.plan': 1 });
 userSchema.index({ 'subscription.validUntil': 1 });
 userSchema.index({ 'security.isActive': 1 });
+userSchema.index({ 'security.isVerified': 1 });
 
 // Virtual for full name
 userSchema.virtual('fullName').get(function() {
@@ -251,15 +276,94 @@ userSchema.virtual('remainingTests').get(function() {
   return -1; // Unlimited
 });
 
+// Virtual to check if account is locked
+userSchema.virtual('isLocked').get(function() {
+  return !!(this.security.lockUntil && this.security.lockUntil > Date.now());
+});
+
+// Pre-save middleware for password hashing
+userSchema.pre('save', async function(next) {
+  try {
+    // Only hash password if it has been modified (or is new) AND it's not already hashed
+    if (!this.isModified('password')) return next();
+    
+    // Skip hashing if password is already hashed (starts with $2b$ for bcrypt)
+    if (this.password.startsWith('$2b$')) {
+      return next();
+    }
+    
+    // Hash password with cost of 12
+    const salt = await bcrypt.genSalt(12);
+    this.password = await bcrypt.hash(this.password, salt);
+    
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Pre-save middleware for data validation and formatting
+userSchema.pre('save', function(next) {
+  // Ensure email is lowercase
+  if (this.email) {
+    this.email = this.email.toLowerCase().trim();
+  }
+  
+  // Ensure phone number is clean
+  if (this.phoneNumber) {
+    this.phoneNumber = this.phoneNumber.trim();
+  }
+  
+  // Update statistics averages
+  if (this.statistics.totalTestsCompleted > 0) {
+    this.statistics.averageScore = Math.round(this.statistics.averageScore * 100) / 100;
+  }
+  
+  next();
+});
+
 // Instance methods
+
+// Compare password method
+userSchema.methods.comparePassword = async function(candidatePassword) {
+  try {
+    return await bcrypt.compare(candidatePassword, this.password);
+  } catch (error) {
+    throw new Error('Password comparison failed');
+  }
+};
+
+// Update login info
 userSchema.methods.updateLoginInfo = function(ipAddress) {
   this.security.lastLoginAt = new Date();
   this.security.loginCount += 1;
   this.security.lastLoginIP = ipAddress || '';
+  this.security.failedLoginAttempts = 0; // Reset failed attempts on successful login
   this.statistics.lastActiveDate = new Date();
   return this.save();
 };
 
+// Handle failed login attempt
+userSchema.methods.incFailedLoginAttempts = function() {
+  // If we have a previous lock and it's expired, restart
+  if (this.security.lockUntil && this.security.lockUntil < Date.now()) {
+    return this.updateOne({
+      $unset: { 'security.lockUntil': 1 },
+      $set: { 'security.failedLoginAttempts': 1 }
+    });
+  }
+  
+  const updates = { $inc: { 'security.failedLoginAttempts': 1 } };
+  
+  // Lock account after 5 failed attempts for 2 hours
+  if (this.security.failedLoginAttempts + 1 >= 5 && !this.isLocked) {
+    updates.$set = { 'security.lockUntil': Date.now() + 2 * 60 * 60 * 1000 }; // 2 hours
+  }
+  
+  return this.updateOne(updates);
+};
+
+// Update test statistics
 userSchema.methods.updateTestStatistics = function(testScore, timeTaken, completed = true) {
   this.statistics.totalTestsAttempted += 1;
   if (completed) {
@@ -303,9 +407,14 @@ userSchema.methods.updateTestStatistics = function(testScore, timeTaken, complet
   return this.save();
 };
 
+// Check if user can take test
 userSchema.methods.canTakeTest = function() {
-  if (!this.security.isActive || this.security.accountLocked) {
-    return { allowed: false, reason: 'Account is inactive or locked' };
+  if (!this.security.isActive || this.security.accountLocked || this.isLocked) {
+    return { allowed: false, reason: 'Account is inactive, locked, or temporarily locked due to failed login attempts' };
+  }
+  
+  if (!this.security.isVerified) {
+    return { allowed: false, reason: 'Account is not verified' };
   }
   
   const now = new Date();
@@ -320,6 +429,7 @@ userSchema.methods.canTakeTest = function() {
   return { allowed: true, remaining: this.remainingTests };
 };
 
+// Get public profile
 userSchema.methods.getPublicProfile = function() {
   return {
     id: this._id,
@@ -342,6 +452,10 @@ userSchema.methods.getPublicProfile = function() {
       averageScore: Math.round(this.statistics.averageScore),
       bestScore: this.statistics.bestScore,
       streakDays: this.statistics.streakDays
+    },
+    security: {
+      isVerified: this.security.isVerified,
+      lastLoginAt: this.security.lastLoginAt
     },
     joinedAt: this.createdAt
   };
@@ -372,26 +486,6 @@ userSchema.statics.getSubscriptionStats = function() {
     }
   ]);
 };
-
-// Pre-save middleware
-userSchema.pre('save', function(next) {
-  // Ensure email is lowercase
-  if (this.email) {
-    this.email = this.email.toLowerCase().trim();
-  }
-  
-  // Ensure phone number is clean
-  if (this.phoneNumber) {
-    this.phoneNumber = this.phoneNumber.trim();
-  }
-  
-  // Update statistics averages
-  if (this.statistics.totalTestsCompleted > 0) {
-    this.statistics.averageScore = Math.round(this.statistics.averageScore * 100) / 100;
-  }
-  
-  next();
-});
 
 // Post-save middleware for logging
 userSchema.post('save', function(doc) {
