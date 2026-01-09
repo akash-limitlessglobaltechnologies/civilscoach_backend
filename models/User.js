@@ -408,6 +408,7 @@ userSchema.methods.updateTestStatistics = function(testScore, timeTaken, complet
 };
 
 // Check if user can take test
+// Check if user can take test - MINIMAL CHANGE: Always allow unlimited tests
 userSchema.methods.canTakeTest = function() {
   if (!this.security.isActive || this.security.accountLocked || this.isLocked) {
     return { allowed: false, reason: 'Account is inactive, locked, or temporarily locked due to failed login attempts' };
@@ -417,16 +418,8 @@ userSchema.methods.canTakeTest = function() {
     return { allowed: false, reason: 'Account is not verified' };
   }
   
-  const now = new Date();
-  if (this.subscription.validUntil < now) {
-    return { allowed: false, reason: 'Subscription expired' };
-  }
-  
-  if (this.subscription.plan === 'Free' && this.subscription.testsUsed >= this.subscription.testsAllowed) {
-    return { allowed: false, reason: 'Free test limit reached' };
-  }
-  
-  return { allowed: true, remaining: this.remainingTests };
+  // REMOVED subscription checks - always allow unlimited tests
+  return { allowed: true, remaining: -1 }; // Always allowed, unlimited tests
 };
 
 // Get public profile

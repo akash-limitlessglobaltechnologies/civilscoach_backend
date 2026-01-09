@@ -141,8 +141,7 @@ const testSchema = new mongoose.Schema({
         trim: true
       },
       area: {
-        type: Number,
-        default: 1
+        type: String
       },
       subarea: {
         type: String,
