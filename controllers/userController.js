@@ -1,5 +1,7 @@
 const UserTestRecord = require('../models/UserTestRecord');
 const User = require('../models/User');
+const Test = require('../models/Test');
+const mongoose = require('mongoose');
 const { validateEmail } = require('../utils/validation');
 
 // Get user performance (enhanced with user profile integration)
@@ -114,30 +116,64 @@ const getUserPerformance = async (req, res, next) => {
     
     // Subject-wise performance analysis
     const subjectPerformance = {};
+    
+    // Initialize areas 1-7 with proper names
+    const areaNames = {
+      1: 'Current Affairs',
+      2: 'History', 
+      3: 'Polity',
+      4: 'Economy',
+      5: 'Geography',
+      6: 'Ecology',
+      7: 'General Science'
+    };
+
+    // Initialize all areas
+    for (let area = 1; area <= 7; area++) {
+      subjectPerformance[area] = {
+        areaName: areaNames[area],
+        correct: 0,
+        wrong: 0,
+        unanswered: 0,
+        total: 0,
+        percentage: 0
+      };
+    }
+
+    // Calculate cumulative topic-wise performance from all test records
     allUserRecords.forEach(record => {
+      // Method 1: Use analytics.subjectWisePerformance if available
       if (record.analytics && record.analytics.subjectWisePerformance) {
         for (const [subject, stats] of record.analytics.subjectWisePerformance) {
-          if (!subjectPerformance[subject]) {
-            subjectPerformance[subject] = {
-              correct: 0,
-              wrong: 0,
-              unanswered: 0,
-              total: 0,
-              percentage: 0
-            };
+          const area = parseInt(subject);
+          if (area >= 1 && area <= 7 && subjectPerformance[area]) {
+            subjectPerformance[area].correct += stats.correct || 0;
+            subjectPerformance[area].wrong += stats.wrong || 0;
+            subjectPerformance[area].unanswered += stats.unanswered || 0;
+            subjectPerformance[area].total += stats.total || 0;
           }
-          subjectPerformance[subject].correct += stats.correct || 0;
-          subjectPerformance[subject].wrong += stats.wrong || 0;
-          subjectPerformance[subject].unanswered += stats.unanswered || 0;
-          subjectPerformance[subject].total += stats.total || 0;
         }
+      }
+      
+      // Method 2: Parse answers directly if analytics not available
+      else if (record.answers && typeof record.answers === 'object') {
+        // Get the original test questions to determine areas
+        // Note: This would require population of testId with questions, 
+        // but since analytics should be available, this is a fallback
       }
     });
 
-    // Calculate subject percentages
-    Object.keys(subjectPerformance).forEach(subject => {
-      const stats = subjectPerformance[subject];
-      stats.percentage = stats.total > 0 ? ((stats.correct / stats.total) * 100).toFixed(1) : 0;
+    // Calculate percentages for each subject
+    Object.keys(subjectPerformance).forEach(area => {
+      const stats = subjectPerformance[area];
+      if (stats.total > 0) {
+        stats.percentage = parseFloat(((stats.correct / stats.total) * 100).toFixed(1));
+        stats.accuracy = stats.correct + stats.wrong > 0 ? 
+          parseFloat(((stats.correct / (stats.correct + stats.wrong)) * 100).toFixed(1)) : 0;
+      } else {
+        stats.percentage = 0;
+        stats.accuracy = 0;
+      }
     });
 
     // Test type performance
@@ -175,8 +211,9 @@ const getUserPerformance = async (req, res, next) => {
     const performanceTrend = recentAveragePercentage > averagePercentage ? 'improving' : 
                            recentAveragePercentage < averagePercentage ? 'declining' : 'stable';
 
-    // Format test history for frontend with enhanced details
+    // Format test history for frontend with enhanced details INCLUDING recordId
     const testHistory = userRecords.map(record => ({
+      recordId: record._id, // IMPORTANT: Add recordId for detailed analysis
       id: record._id,
       testName: record.testName,
       testType: record.testType,
@@ -206,11 +243,14 @@ const getUserPerformance = async (req, res, next) => {
       success: true,
       user: user.getPublicProfile(),
       totalTests,
+      averagePercentage: Math.round(averagePercentage),
       averageScore: Math.round(averagePercentage),
       averageWeightedScore: parseFloat(averageWeightedScore.toFixed(2)),
       bestScore: Math.round(bestPercentage),
       bestWeightedScore: parseFloat(bestWeightedScore.toFixed(2)),
       totalQuestions,
+      totalCorrectAnswers,
+      totalTimeTaken: totalTime,
       testHistory,
       statistics: {
         ...user.statistics.toObject(),
@@ -235,8 +275,17 @@ const getUserPerformance = async (req, res, next) => {
         subjectPerformance,
         testTypePerformance,
         difficultyAnalysis: {
-          // This would be calculated from individual question analysis
-          // Implementation would require aggregating difficulty data
+          easy: allUserRecords.filter(r => r.analytics?.difficultyWisePerformance?.easy?.total > 0).length,
+          medium: allUserRecords.filter(r => r.analytics?.difficultyWisePerformance?.medium?.total > 0).length,
+          hard: allUserRecords.filter(r => r.analytics?.difficultyWisePerformance?.hard?.total > 0).length
+        },
+        weeklyStats: {
+          testsThisWeek: allUserRecords.filter(record => {
+            const testDate = new Date(record.completion?.completedAt || record.completedAt);
+            const weekAgo = new Date();
+            weekAgo.setDate(weekAgo.getDate() - 7);
+            return testDate >= weekAgo;
+          }).length
         }
       },
       subscription: {
@@ -253,23 +302,21 @@ const getUserPerformance = async (req, res, next) => {
       }
     };
 
-    console.log('Sending enhanced performance data with', testHistory.length, 'test records');
     res.json(responseData);
 
   } catch (error) {
-    console.error('Error fetching user performance:', error);
+    console.error('Error in getUserPerformance:', error);
     next(error);
   }
 };
 
-// Get detailed user test history with answers
+// Get detailed user test history
 const getUserTestHistory = async (req, res, next) => {
   try {
     const userId = req.user.userId;
     const email = req.user.email;
-    const { testId } = req.params;
     
-    if (!userId || !email || !validateEmail(email)) {
+    if (!userId || !email) {
       return res.status(400).json({
         success: false,
         message: 'Invalid user authentication',
@@ -277,194 +324,183 @@ const getUserTestHistory = async (req, res, next) => {
       });
     }
 
-    // Get user data
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found',
-        type: 'USER_NOT_FOUND'
-      });
-    }
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
 
-    // Build query
-    let query = {
+    // Get user test records with detailed analytics
+    const userRecords = await UserTestRecord.find({
       $or: [
         { userId: userId },
         { email: email.toLowerCase().trim() }
       ]
-    };
-    
-    if (testId) {
-      query.testId = testId;
-    }
-
-    // Get records with full details including populated test data
-    const records = await UserTestRecord.find(query)
+    })
       .sort({ 'completion.completedAt': -1 })
-      .populate('testId', 'name year paper duration questions testType')
-      .limit(50); // Limit to prevent large responses
+      .skip(skip)
+      .limit(limit)
+      .populate('testId', 'name testType duration numberOfQuestions');
 
-    // Format detailed history with answer analysis
-    const detailedHistory = records.map(record => {
-      const incorrectAnswers = record.getIncorrectAnswers();
-      const answerBreakdown = [];
+    const totalRecords = await UserTestRecord.countDocuments({
+      $or: [
+        { userId: userId },
+        { email: email.toLowerCase().trim() }
+      ]
+    });
+
+    const testHistory = userRecords.map(record => {
+      const recommendations = generateRecommendations(record, record.analytics);
       
-      // Convert answers Map to array for frontend
-      if (record.answers) {
-        for (const [questionIndex, answerData] of record.answers.entries()) {
-          answerBreakdown.push({
-            questionIndex: parseInt(questionIndex),
-            ...answerData
-          });
-        }
-      }
-
       return {
+        recordId: record._id, // IMPORTANT: Include recordId for detailed analysis
         id: record._id,
-        testId: record.testId?._id,
         testName: record.testName,
         testType: record.testType,
         testYear: record.testYear,
         testPaper: record.testPaper,
-        score: record.score,
-        correctAnswers: record.correctAnswers || 0,
-        wrongAnswers: record.wrongAnswers || 0,
-        unansweredQuestions: record.unansweredQuestions || 0,
-        totalQuestions: record.totalQuestions,
+        submittedAt: record.completion?.completedAt || record.completedAt,
+        score: {
+          weighted: record.score,
+          correct: record.correctAnswers || 0,
+          wrong: record.wrongAnswers || 0,
+          unanswered: record.unansweredQuestions || 0,
+          total: record.totalQuestions
+        },
         percentage: record.percentage,
         grade: record.grade,
-        efficiency: record.efficiency,
+        timeExpired: record.timeExpired,
         timeTaken: record.timeTaken,
         timeAllotted: record.timeAllotted,
-        timeExpired: record.timeExpired,
-        completedAt: record.completion?.completedAt || record.completedAt,
-        submissionType: record.completion?.submissionType || 'manual',
-        scoring: record.scoring || { correct: 4, wrong: -1, unanswered: 0 },
-        performance: record.performanceSummary,
-        answers: answerBreakdown,
-        incorrectAnswers: incorrectAnswers,
+        efficiency: record.efficiency,
+        performanceSummary: record.performanceSummary,
+        scoring: record.scoring,
         analytics: {
-          subjectWisePerformance: record.analytics?.subjectWisePerformance ? 
-            Object.fromEntries(record.analytics.subjectWisePerformance) : {},
+          subjectWisePerformance: record.analytics?.subjectWisePerformance || {},
           difficultyWisePerformance: record.analytics?.difficultyWisePerformance || {},
           averageTimePerQuestion: record.analytics?.averageTimePerQuestion || 0,
-          flaggedQuestions: record.analytics?.flaggedQuestions || []
+          questionsReviewed: record.analytics?.questionsReviewed || 0,
+          flaggedQuestions: record.analytics?.flaggedQuestions || [],
+          accuracy: record.totalQuestions > 0 ? ((record.correctAnswers / record.totalQuestions) * 100).toFixed(1) : 0,
+          completionRate: record.totalQuestions > 0 ? (((record.correctAnswers + record.wrongAnswers) / record.totalQuestions) * 100).toFixed(1) : 0
         },
+        completion: record.completion,
         review: record.review,
-        testDetails: record.testId ? {
-          totalQuestions: record.testId.questions?.length,
-          duration: record.testId.duration,
-          testType: record.testId.testType
-        } : null
+        recommendations: recommendations
       };
     });
 
     res.json({
       success: true,
-      user: user.getPublicProfile(),
-      testHistory: detailedHistory,
-      totalRecords: detailedHistory.length,
-      hasFullDetails: true,
-      subscription: {
-        ...user.subscription.toObject(),
-        status: user.subscriptionStatus,
-        remainingTests: user.remainingTests
+      testHistory,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalRecords / limit),
+        totalRecords,
+        hasNext: page < Math.ceil(totalRecords / limit),
+        hasPrev: page > 1
+      },
+      summary: {
+        totalTests: totalRecords,
+        averageScore: testHistory.length > 0 ? 
+          testHistory.reduce((sum, test) => sum + test.percentage, 0) / testHistory.length : 0,
+        bestScore: testHistory.length > 0 ? 
+          Math.max(...testHistory.map(test => test.percentage)) : 0
       }
     });
 
   } catch (error) {
-    console.error('Error fetching detailed test history:', error);
+    console.error('Error in getUserTestHistory:', error);
     next(error);
   }
 };
 
-// Get specific test attempt with full details
+// Get specific test attempt with comprehensive analysis (NEW METHOD)
 const getTestAttemptDetails = async (req, res, next) => {
   try {
     const userId = req.user.userId;
+    const email = req.user.email;
     const { recordId } = req.params;
-    
-    // Find the specific test record
-    const record = await UserTestRecord.findOne({
+
+    console.log('Fetching test attempt details for:', { recordId, userId, email });
+
+    // Validate recordId
+    if (!mongoose.Types.ObjectId.isValid(recordId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid record ID format'
+      });
+    }
+
+    // Find the specific test attempt
+    const testAttempt = await UserTestRecord.findOne({
       _id: recordId,
       $or: [
         { userId: userId },
-        { email: req.user.email.toLowerCase().trim() }
+        { email: email.toLowerCase().trim() }
       ]
-    }).populate('testId', 'name questions duration testType scoring');
+    }).lean();
 
-    if (!record) {
+    if (!testAttempt) {
       return res.status(404).json({
         success: false,
-        message: 'Test record not found',
-        type: 'RECORD_NOT_FOUND'
+        message: 'Test attempt not found or you do not have permission to view it'
       });
     }
 
-    // Get user data
-    const user = await User.findById(userId);
+    console.log('Found test attempt:', testAttempt.testName);
 
-    // Prepare detailed analysis
-    const questionAnalysis = [];
-    const test = record.testId;
-    
-    if (test && test.questions && record.answers) {
-      test.questions.forEach((question, index) => {
-        const answerData = record.getAnswerDetails(index);
-        
-        questionAnalysis.push({
-          questionIndex: index,
-          question: {
-            text: question.question,
-            options: question.options.map(opt => ({
-              key: opt.key,
-              text: opt.text,
-              isCorrect: opt.correct
-            })),
-            difficulty: question.difficulty,
-            area: question.area,
-            subarea: question.subarea,
-            explanation: question.explanation
-          },
-          answer: answerData || {
-            selectedOption: '',
-            correctOption: question.options.find(opt => opt.correct)?.key || 'A',
-            isCorrect: false,
-            timeSpent: 0,
-            attempts: 0
-          }
-        });
-      });
+    // Get the associated test details for questions
+    let testDetails = null;
+    if (testAttempt.testId) {
+      testDetails = await Test.findById(testAttempt.testId).lean();
+      console.log('Found test details:', testDetails ? testDetails.name : 'Not found');
     }
 
-    // Calculate detailed analytics
-    const detailedAnalytics = record.calculateDetailedAnalytics();
-
-    res.json({
+    // Prepare response with comprehensive test attempt data
+    const response = {
       success: true,
-      record: {
-        id: record._id,
-        testName: record.testName,
-        testType: record.testType,
-        score: record.score,
-        percentage: record.percentage,
-        grade: record.grade,
-        performance: record.performanceSummary,
-        timeTaken: record.timeTaken,
-        timeAllotted: record.timeAllotted,
-        completedAt: record.completion?.completedAt || record.completedAt,
-        scoring: record.scoring
+      testAttempt: {
+        recordId: testAttempt._id,
+        testId: testAttempt.testId,
+        testName: testAttempt.testName,
+        testType: testAttempt.testType,
+        testYear: testAttempt.testYear,
+        testPaper: testAttempt.testPaper,
+        score: testAttempt.score,
+        percentage: testAttempt.percentage,
+        correctAnswers: testAttempt.correctAnswers,
+        wrongAnswers: testAttempt.wrongAnswers,
+        unansweredQuestions: testAttempt.unansweredQuestions,
+        totalQuestions: testAttempt.totalQuestions,
+        timeTaken: testAttempt.timeTaken,
+        timeAllotted: testAttempt.timeAllotted,
+        timeExpired: testAttempt.timeExpired,
+        answers: testAttempt.answers,
+        analytics: testAttempt.analytics,
+        scoring: testAttempt.scoring,
+        completion: testAttempt.completion,
+        review: testAttempt.review,
+        metadata: testAttempt.metadata,
+        createdAt: testAttempt.createdAt,
+        updatedAt: testAttempt.updatedAt
       },
-      questionAnalysis,
-      analytics: detailedAnalytics,
-      user: user?.getPublicProfile(),
-      comparison: record.getComparisonWithPreviousAttempts(),
-      recommendations: generateRecommendations(record, detailedAnalytics)
-    });
+      questions: testDetails ? testDetails.questions : [],
+      testInfo: testDetails ? {
+        name: testDetails.name,
+        testType: testDetails.testType,
+        year: testDetails.year,
+        paper: testDetails.paper,
+        duration: testDetails.duration,
+        numberOfQuestions: testDetails.numberOfQuestions,
+        scoring: testDetails.scoring
+      } : null
+    };
+
+    console.log('Sending response with questions count:', response.questions.length);
+
+    res.json(response);
 
   } catch (error) {
-    console.error('Error fetching test attempt details:', error);
+    console.error('Error in getTestAttemptDetails:', error);
     next(error);
   }
 };
@@ -473,10 +509,45 @@ const getTestAttemptDetails = async (req, res, next) => {
 const updateUserProfile = async (req, res, next) => {
   try {
     const userId = req.user.userId;
-    const { profile, preferences } = req.body;
+    const updates = req.body;
 
-    const user = await User.findById(userId);
-    if (!user) {
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid user authentication',
+        type: 'AUTH_ERROR'
+      });
+    }
+
+    // Only allow specific fields to be updated for security
+    const allowedUpdates = {};
+    
+    if (updates.profile) {
+      if (updates.profile.firstName !== undefined) allowedUpdates['profile.firstName'] = updates.profile.firstName;
+      if (updates.profile.lastName !== undefined) allowedUpdates['profile.lastName'] = updates.profile.lastName;
+      if (updates.profile.dateOfBirth !== undefined) allowedUpdates['profile.dateOfBirth'] = updates.profile.dateOfBirth;
+      if (updates.profile.gender !== undefined) allowedUpdates['profile.gender'] = updates.profile.gender;
+      if (updates.profile.category !== undefined) allowedUpdates['profile.category'] = updates.profile.category;
+    }
+
+    if (updates.preferences) {
+      if (updates.preferences.language !== undefined) allowedUpdates['preferences.language'] = updates.preferences.language;
+      if (updates.preferences.notifications?.email !== undefined) allowedUpdates['preferences.notifications.email'] = updates.preferences.notifications.email;
+      if (updates.preferences.notifications?.sms !== undefined) allowedUpdates['preferences.notifications.sms'] = updates.preferences.notifications.sms;
+      if (updates.preferences.testSettings?.defaultTimer !== undefined) allowedUpdates['preferences.testSettings.defaultTimer'] = updates.preferences.testSettings.defaultTimer;
+      if (updates.preferences.testSettings?.showExplanations !== undefined) allowedUpdates['preferences.testSettings.showExplanations'] = updates.preferences.testSettings.showExplanations;
+      if (updates.preferences.testSettings?.autoSubmit !== undefined) allowedUpdates['preferences.testSettings.autoSubmit'] = updates.preferences.testSettings.autoSubmit;
+    }
+
+    console.log('Updating user profile:', { userId, allowedUpdates });
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { $set: allowedUpdates },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedUser) {
       return res.status(404).json({
         success: false,
         message: 'User not found',
@@ -484,44 +555,26 @@ const updateUserProfile = async (req, res, next) => {
       });
     }
 
-    // Update profile fields if provided
-    if (profile) {
-      Object.keys(profile).forEach(key => {
-        if (user.profile[key] !== undefined) {
-          user.profile[key] = profile[key];
-        }
-      });
-    }
-
-    // Update preferences if provided
-    if (preferences) {
-      Object.keys(preferences).forEach(key => {
-        if (user.preferences[key] !== undefined) {
-          if (typeof preferences[key] === 'object') {
-            Object.assign(user.preferences[key], preferences[key]);
-          } else {
-            user.preferences[key] = preferences[key];
-          }
-        }
-      });
-    }
-
-    await user.save();
-
-    console.log('User profile updated:', {
-      userId,
-      email: user.email,
-      updatedFields: Object.keys(profile || {}).concat(Object.keys(preferences || {}))
-    });
+    console.log('Profile updated successfully for user:', userId);
 
     res.json({
       success: true,
       message: 'Profile updated successfully',
-      user: user.getPublicProfile()
+      user: updatedUser.getPublicProfile()
     });
 
   } catch (error) {
     console.error('Error updating user profile:', error);
+    
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation error',
+        type: 'VALIDATION_ERROR',
+        errors: Object.values(error.errors).map(err => err.message)
+      });
+    }
+    
     next(error);
   }
 };
@@ -530,14 +583,33 @@ const updateUserProfile = async (req, res, next) => {
 const submitTestFeedback = async (req, res, next) => {
   try {
     const userId = req.user.userId;
+    const email = req.user.email;
     const { recordId } = req.params;
     const { difficulty, quality, comments } = req.body;
+
+    if (!userId || !email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid user authentication',
+        type: 'AUTH_ERROR'
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(recordId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid record ID',
+        type: 'VALIDATION_ERROR'
+      });
+    }
+
+    console.log('Submitting feedback:', { userId, recordId, difficulty, quality });
 
     const record = await UserTestRecord.findOne({
       _id: recordId,
       $or: [
         { userId: userId },
-        { email: req.user.email.toLowerCase().trim() }
+        { email: email.toLowerCase().trim() }
       ]
     });
 
@@ -550,15 +622,14 @@ const submitTestFeedback = async (req, res, next) => {
     }
 
     // Update feedback
-    record.review = {
-      hasReviewed: true,
-      reviewedAt: new Date(),
-      feedback: {
-        difficulty: difficulty || 'Just Right',
-        quality: quality || 5,
-        comments: comments || ''
-      }
-    };
+    record.review = record.review || {};
+    record.review.hasReviewed = true;
+    record.review.reviewedAt = new Date();
+    record.review.feedback = record.review.feedback || {};
+    
+    if (difficulty) record.review.feedback.difficulty = difficulty;
+    if (quality) record.review.feedback.quality = quality;
+    if (comments !== undefined) record.review.feedback.comments = comments;
 
     await record.save();
 
@@ -630,6 +701,7 @@ const getUserDashboard = async (req, res, next) => {
       user: user.getPublicProfile(),
       dashboard: {
         recentTests: recentTests.map(record => ({
+          recordId: record._id, // IMPORTANT: Include recordId for detailed analysis
           id: record._id,
           testName: record.testName,
           testType: record.testType,
@@ -694,7 +766,7 @@ const generateRecommendations = (record, analytics) => {
   }
 
   // Subject-specific recommendations
-  if (analytics.subjectWisePerformance) {
+  if (analytics?.subjectWisePerformance) {
     const weakestSubject = Object.entries(analytics.subjectWisePerformance)
       .sort((a, b) => a[1].percentage - b[1].percentage)[0];
     
