@@ -59,7 +59,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/tests', testRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/user', userRoutes);
-
+app.use('/api/user/untimed-practice', require('./routes/untimedPracticeRoutes'));
 // Global error handling middleware
 app.use((err, req, res, next) => {
   console.error('Global error handler:', err);
