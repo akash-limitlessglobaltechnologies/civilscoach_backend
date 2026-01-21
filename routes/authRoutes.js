@@ -113,6 +113,46 @@ const validateLogin = [
     .withMessage('Password must be at least 8 characters long')
 ];
 
+// Validation rules for forgot password flow
+const validateForgotPassword = [
+  body('identifier')
+    .notEmpty()
+    .withMessage('Email or phone number is required')
+    .isLength({ min: 5, max: 100 })
+    .withMessage('Identifier must be between 5 and 100 characters')
+    .trim()
+];
+
+const validateResetPassword = [
+  body('sessionKey')
+    .notEmpty()
+    .withMessage('Session key is required')
+    .isLength({ min: 10, max: 200 })
+    .withMessage('Invalid session key format'),
+  
+  body('emailOTP')
+    .notEmpty()
+    .withMessage('Email OTP is required')
+    .isLength({ min: 6, max: 6 })
+    .withMessage('Email OTP must be 6 digits')
+    .isNumeric()
+    .withMessage('Email OTP must contain only numbers'),
+  
+  body('phoneOTP')
+    .notEmpty()
+    .withMessage('Phone OTP is required')
+    .isLength({ min: 6, max: 6 })
+    .withMessage('Phone OTP must be 6 digits')
+    .isNumeric()
+    .withMessage('Phone OTP must contain only numbers'),
+  
+  body('newPassword')
+    .isLength({ min: 8 })
+    .withMessage('New password must be at least 8 characters long')
+    .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/)
+    .withMessage('New password must contain at least one uppercase letter, one lowercase letter, one number, and one special character')
+];
+
 // Validation rules for utility functions
 const validateResendOTP = [
   body('sessionKey')
@@ -166,6 +206,22 @@ router.post('/login',
   authController.login
 );
 
+// FORGOT PASSWORD ROUTES
+
+// Forgot password - send reset OTP
+router.post('/forgot-password', 
+  validateForgotPassword, 
+  handleValidationErrors, 
+  authController.forgotPassword
+);
+
+// Reset password with OTP
+router.post('/reset-password', 
+  validateResetPassword, 
+  handleValidationErrors, 
+  authController.resetPassword
+);
+
 // UTILITY ROUTES
 
 // Resend OTP (works for both signup and login flows)
@@ -197,39 +253,6 @@ router.post('/logout',
 );
 
 // PASSWORD MANAGEMENT ROUTES (Future implementation)
-
-// Forgot password - send reset OTP
-router.post('/forgot-password', [
-  body('identifier')
-    .notEmpty()
-    .withMessage('Email or phone number is required')
-    .trim()
-], handleValidationErrors, async (req, res) => {
-  // TODO: Implement forgot password functionality
-  res.status(501).json({
-    success: false,
-    message: 'Forgot password feature coming soon',
-    type: 'NOT_IMPLEMENTED'
-  });
-});
-
-// Reset password with OTP
-router.post('/reset-password', [
-  body('sessionKey').notEmpty().withMessage('Session key is required'),
-  body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
-  body('newPassword')
-    .isLength({ min: 8 })
-    .withMessage('Password must be at least 8 characters long')
-    .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/)
-    .withMessage('Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character')
-], handleValidationErrors, async (req, res) => {
-  // TODO: Implement reset password functionality
-  res.status(501).json({
-    success: false,
-    message: 'Reset password feature coming soon',
-    type: 'NOT_IMPLEMENTED'
-  });
-});
 
 // Change password (protected route)
 router.post('/change-password', 
@@ -345,6 +368,10 @@ router.get('/health', (req, res) => {
       login: {
         login: 'POST /api/auth/login'
       },
+      forgotPassword: {
+        sendResetOTP: 'POST /api/auth/forgot-password',
+        resetPassword: 'POST /api/auth/reset-password'
+      },
       utility: {
         resendOTP: 'POST /api/auth/resend-otp',
         sessionStatus: 'GET /api/auth/session/:sessionKey/status',
@@ -352,8 +379,6 @@ router.get('/health', (req, res) => {
         logout: 'POST /api/auth/logout'
       },
       future: {
-        forgotPassword: 'POST /api/auth/forgot-password [COMING SOON]',
-        resetPassword: 'POST /api/auth/reset-password [COMING SOON]',
         changePassword: 'POST /api/auth/change-password [COMING SOON]'
       }
     }
@@ -392,6 +417,8 @@ router.get('/status', (req, res) => {
       features: {
         signup: 'Available',
         login: 'Available',
+        forgotPassword: 'Available',
+        resetPassword: 'Available',
         otpVerification: 'Available',
         passwordAuthentication: 'Available',
         jwtTokens: 'Available'

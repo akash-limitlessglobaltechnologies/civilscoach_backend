@@ -4,6 +4,9 @@ const { body, param } = require('express-validator');
 const { authenticateToken } = require('../middleware/auth');
 const userController = require('../controllers/userController');
 
+// Import untimed practice controller
+const untimedPracticeController = require('../controllers/untimedPracticeController');
+
 // Validation middleware
 const handleValidationErrors = (req, res, next) => {
   const { validationResult } = require('express-validator');
@@ -290,6 +293,57 @@ router.get('/ranking/:testId',
   }
 );
 
+// =============================================================================
+// UNTIMED PRACTICE ROUTES - NEW ADDITION
+// =============================================================================
+
+// Get next untimed practice question
+router.get('/untimed-practice/next', 
+  authenticateToken, 
+  untimedPracticeController.getNextQuestion
+);
+
+// Track answer for untimed practice question  
+router.post('/untimed-practice/track-answer',
+  authenticateToken,
+  [
+    body('questionId').isMongoId().withMessage('Invalid question ID'),
+    body('selectedAnswer').isIn(['A', 'B', 'C', 'D']).withMessage('Answer must be A, B, C, or D'),
+    body('isCorrect').isBoolean().withMessage('isCorrect must be boolean'),
+    body('timeSpent').optional().isInt({ min: 0 }).withMessage('Time spent must be non-negative')
+  ],
+  handleValidationErrors,
+  untimedPracticeController.trackAnswer
+);
+
+// Track skip for untimed practice question
+router.post('/untimed-practice/track-skip',
+  authenticateToken,
+  [
+    body('questionId').isMongoId().withMessage('Invalid question ID'),
+    body('timeSpent').optional().isInt({ min: 0 }).withMessage('Time spent must be non-negative')
+  ],
+  handleValidationErrors,
+  untimedPracticeController.trackSkip
+);
+
+// Get user's untimed practice statistics
+router.get('/untimed-practice/stats',
+  authenticateToken,
+  untimedPracticeController.getUserStats
+);
+
+// Reset untimed practice progress (for testing/admin)
+router.post('/untimed-practice/reset',
+  authenticateToken,
+  [
+    body('subject').optional().isIn(['all', '1', '2', '3', '4', '5', '6', '7', '8']).withMessage('Invalid subject'),
+    body('confirmReset').isBoolean().withMessage('confirmReset must be boolean')
+  ],
+  handleValidationErrors,
+  untimedPracticeController.resetProgress
+);
+
 // Health check for user service
 router.get('/health', (req, res) => {
   res.json({
@@ -305,7 +359,15 @@ router.get('/health', (req, res) => {
       feedback: 'POST /api/user/attempts/:recordId/feedback',
       statistics: 'GET /api/user/statistics/*',
       progress: 'GET /api/user/progress',
-      ranking: 'GET /api/user/ranking/:testId'
+      ranking: 'GET /api/user/ranking/:testId',
+      // NEW: Untimed practice endpoints
+      'untimed-practice': {
+        next: 'GET /api/user/untimed-practice/next',
+        trackAnswer: 'POST /api/user/untimed-practice/track-answer',
+        trackSkip: 'POST /api/user/untimed-practice/track-skip',
+        stats: 'GET /api/user/untimed-practice/stats',
+        reset: 'POST /api/user/untimed-practice/reset'
+      }
     }
   });
 });

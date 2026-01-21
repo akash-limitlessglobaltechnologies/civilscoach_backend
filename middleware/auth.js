@@ -42,8 +42,28 @@ const authenticateToken = (req, res, next) => {
         });
       }
 
-      // Add user info to request object
-      req.user = user;
+      // FIXED: Ensure consistent user ID properties for all controllers
+      // Handle different JWT payload structures
+      const userId = user._id || user.userId || user.id;
+      
+      if (!userId) {
+        console.error('No user ID found in JWT payload:', user);
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid token payload',
+          type: 'INVALID_TOKEN_PAYLOAD'
+        });
+      }
+
+      // Add user info to request object with multiple properties for compatibility
+      req.user = {
+        ...user, // Keep all original JWT payload properties
+        _id: userId,        // For untimed practice controller (MongoDB ObjectId format)
+        userId: userId,     // For existing routes that expect userId
+        id: userId          // For additional compatibility
+      };
+
+      console.log('Authenticated user ID:', userId.toString ? userId.toString() : userId);
       next();
     });
   } catch (error) {
@@ -66,7 +86,19 @@ const optionalAuth = (req, res, next) => {
     if (err) {
       req.user = null;
     } else {
-      req.user = user;
+      // FIXED: Same consistent user ID handling for optional auth
+      const userId = user._id || user.userId || user.id;
+      
+      if (userId) {
+        req.user = {
+          ...user,
+          _id: userId,
+          userId: userId,
+          id: userId
+        };
+      } else {
+        req.user = null;
+      }
     }
     next();
   });
