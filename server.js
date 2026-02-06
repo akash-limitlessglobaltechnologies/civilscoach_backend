@@ -8,6 +8,7 @@ const authRoutes = require('./routes/authRoutes');
 const testRoutes = require('./routes/testRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const userRoutes = require('./routes/userRoutes');
+const feedbackRoutes = require('./routes/feedbackRoutes');
 
 const app = express();
 
@@ -60,6 +61,8 @@ app.use('/api/tests', testRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/user/untimed-practice', require('./routes/untimedPracticeRoutes'));
+app.use('/api/feedback', feedbackRoutes);
+
 // Global error handling middleware
 app.use((err, req, res, next) => {
   console.error('Global error handler:', err);
@@ -101,7 +104,7 @@ const PORT = process.env.PORT || 5000;
 const server = app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
   console.log(`🛡️ Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`💤 Admin ID: ${process.env.ADMIN_ID}`);
+  console.log(`👤 Admin ID: ${process.env.ADMIN_ID}`);
 });
 
 server.on('error', (err) => {
